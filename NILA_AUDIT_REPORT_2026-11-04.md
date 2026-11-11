@@ -305,9 +305,76 @@ with a test that fails on the old code. Original probes were re-run at the end.
 - **Never-read list is still a list.** A secret copied to `plans.txt` is readable;
   suffix matching is a mitigation, not a boundary.
 - **No post-apply health check / automatic rollback** (T25).
-- **The 13 user-confirmed backlog groups** in `NILA_V02_PLAN_DRAFT_TA.md`
-  (online-egress boundary, stale key after re-login, audit-hash mutation, WAL and
-  attachment backup gaps, TOTP replay, negative `Content-Length`, project 200 cap,
-  integration approval replay, sync status/exit) were **out of scope** for this
-  round and are untouched.
+- ~~The 13 user-confirmed backlog groups in `NILA_V02_PLAN_DRAFT_TA.md` were out of
+  scope.~~ **They were completed in the second batch — see §7.**
 - All device/production checks from §3 remain unverified.
+
+---
+
+## 7. Second batch — the v0.2 backlog (completed 2026-11-04)
+
+The 13 confirmed groups in `NILA_V02_PLAN_DRAFT_TA.md` §1 were worked one at a time,
+each reproduced against the shipped code *before* being changed, then re-probed with
+the same script, then locked in by `tests/test_backlog_remediation.py` (29 tests).
+
+| # | Reproduction (before) | Result (after) |
+|---|---|---|
+| **A1** online egress boundary | Already remediated earlier; re-probed with four fake-provider variants (tool result appended then re-sent, mid-turn fallback, legacy `needs_network=True` on the local lane). No private marker reached a network request in any variant. | 46 isolation tests green; no change needed in this batch. |
+| **A2** stale key after re-login | `MemoryStore(..., access_level="full")` on a **degraded** session returned the restricted row (`tier filter would withhold: 1`). | Store derives the level from the session: `full` becomes `degraded`; expired sessions are refused. **Fixed.** |
+| **A3** audit-hash mutation | Editing an entry's `data`, deleting an entry, and reordering all returned `{'ok': True}`. | Chain now covers the whole entry; verifier recomputes every line. All three (plus truncation) → `ok: False`. Pre-fix journals → `legacy_unprotected`, not accused. **Fixed.** |
+| **A4** live WAL loss | 5 committed records, `memory.db` 4,096 B, restore → **0 records**. | SQLite online `conn.backup()`; restore → **5/5**, block 102,400 B. **Fixed.** |
+| **A5** attachments missing | Backup header had no attachment entry at all. | Format 2 + `attachments` + `attachments_sha256`; restored bytes identical. **Fixed.** |
+| **B6** TOTP replay | Same code accepted twice inside one window. | Counter recorded; reuse refused. **Fixed.** |
+| **B7** malformed `Content-Length` | `-1` pinned the handler thread. | `-1`→400, `abc`→400, `999999999`→413, normal→200, all ≤0.01 s. **Fixed.** |
+| **B8** ledger corruption | `{"days": []}` → cap bypassed; `"requests": "lots"` → `ValueError` escaping `usage()`. | Structural corruption check, fails **closed**; four corrupt shapes all refused. **Fixed.** |
+| **B9** project 200 cap | 205 projects → list stopped at 200, oldest "no project matches". | `SCAN_LIMIT = 2000`, `listing()` reports `truncated`; oldest reachable by name. **Fixed.** |
+| **B10** approval replay | One affirmed `net.host` grant → **two** server hits, `uses` stayed 0. | `Broker.consume()` + `spend_unused()` → one hit; replay refused. Redirect half re-probed: credentialed 302 refused, secret never sent. **Fixed.** |
+| **B11** update authenticity | Unsigned refused (already), but a *signed first use* pinned a key_id and then failed every later check — and TOFU pinned a symmetric key straight from the attacker-supplied manifest. | TOFU refuses to pin a symmetric key; with the key supplied out of band, valid manifests verify, forged/unsigned/wrong-`key_id` are refused. **Fixed.** |
+| **B12** sync status/exit | `run_sync` imported `brain.cloud.sync` (does not exist) → `ModuleNotFoundError` **on every call**; `sync_status` had the same import; `sync.backend=""` crashed; status claimed remote with a local backend. | Both tools fail soft and report; `backend`/`remote`/`warnings` truthful; CLI exits **1** on errors. **Fixed.** |
+| **B13** wheel packaging | Already fixed earlier; re-verified in a fresh venv from the built wheel (`brain --version`, imports, `doctor` all pass). | No change needed. |
+
+### 7.1 Extra work from the backlog's "credential rotation" section
+
+- `brain recovery --show` / `--count N` — show remaining codes, or reissue a set.
+  Every previously issued code is invalidated (`reissue_recovery_codes`).
+- `brain change-passphrase` — `Vault.rotate_passphrase()` had **no caller at all**, so
+  the one secret protecting everything could not be changed. Verified: the old
+  passphrase stops working, the new one opens, memories survive (the master key does
+  not change).
+- A **non-interactive** `brain totp` used to replace an enrolled factor silently. It now
+  refuses and requires `--replace`, which only saves after a code from your app is
+  confirmed.
+
+### 7.2 Bugs found while doing the above (fixed too)
+
+- `sync_status` carried the **same** dead import as `run_sync` — the first fix only
+  covered half the bug.
+- Both sync tools let an unexpected exception escape and kill the turn; they now
+  return `{"ok": false, "error": ...}`.
+- The audit verifier reported chain mismatches as `unparsable`, which is a different
+  thing; they are now counted separately (`mismatched` vs `unparsable`).
+- `brain audit` exited `0` even when the chain failed verification; it now exits `3`
+  in `--json` mode so a script can gate on it.
+- `doctor` and `brain audit` now surface `legacy_unprotected` instead of silently
+  calling an unverifiable journal "verified".
+
+### 7.3 Verification after the second batch
+
+| Check | Result |
+|---|---|
+| Full suite (real pytest, with the crypto extra) | **664 passed, 3 skipped** |
+| Fallback runner `scripts/run_tests.py` (no pytest) | **621 passed, 0 failed**, 46 skipped (fixture-based) |
+| New regression file | `tests/test_backlog_remediation.py` — **32 passed** |
+| Wheel in a clean venv, from the built wheel | `brain --version`, `import brain.cli.main`, `brain doctor` → all pass |
+| End-to-end CLI harnesses | backup→restore 5/5; attachment round-trip; TOTP replay; lock/rotation; project 205; sync exit code |
+
+### 7.4 Still open (honest limits)
+
+- ~~`ed25519` TOFU still trusts the first key~~ — inherent to TOFU; the fingerprint is
+  printed so you can verify it out of band.
+- **Integrations remain OFF by default** until the owner enables a named integration;
+  the replay and redirect holes are closed, but no live third-party API was tested.
+- **Remote sync / update channels were not exercised against a real server.** All
+  probes used loopback fixtures.
+- Windows, real microphones, real Ollama/Gemini, and the packaging `setup.bat` path
+  remain untested here (§3).
