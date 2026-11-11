@@ -1,9 +1,18 @@
 # Nila / Personal Brain — Evidence-Based Audit Report
 
+> **STATUS — REMEDIATED 2026-11-04.** Every "Verified finding" below (F1–F11) was
+> fixed in the source tree on branch `arena/3f2334a4-nila-assistant`, with a
+> regression test per finding and a re-run of the original probe showing it is now
+> blocked. Full suite: **633 passed, 2 skipped** (the two skips need a built ZIP;
+> with a ZIP staged they pass too). The fixes are recorded in `CHANGELOG.md` under
+> "Unreleased — audit remediation" and in `docs/THREAT_MODEL.md` (T24/T25/T30
+> rewritten, T45–T47 added). This section is the audit as it was found; §6 is what
+> changed.
+
 **Date:** 2026-11-04
 **Target:** `nilaassistant4-alt/Nila-Assistant`, branch `arena/3f2334a4-nila-assistant` (base `76d8e48`)
 **Audit type:** read-only source review + controlled local dynamic tests with synthetic fixtures
-**Change footprint:** **no Nila source file was modified.** This report is the only new file. Temporary servers, vaults, ZIPs, wheels and fixtures were deleted after each test.
+**Change footprint at audit time:** no Nila source file was modified; this report was the only new file. Temporary servers, vaults, ZIPs, wheels and fixtures were deleted after each test. The remediation that followed is described in §6.
 
 ---
 
@@ -239,3 +248,66 @@ No Windows or macOS runtime; no microphone or real speaker; no biometric hardwar
 ## 5. Bottom line
 
 The security architecture is genuinely more disciplined than the average local-first prototype: capabilities are centralised, the default registry is closed, host tools are read-only, the API checks Host and auth, and the docs are unusually candid about residual risk. The failures cluster where **trust boundaries meet I/O**: redirects that keep their `Authorization` header, path checks done by string prefix, a manifest field that picks the extraction directory, and an update mode that accepts unsigned input forever. None of these requires an exotic attacker — each is a small, testable fix — but together they mean the update and integration paths should stay switched off until they are fixed, and that "install an update" should be treated as "execute code" in the threat model, because that is what it is.
+
+---
+
+## 6. Remediation (2026-11-04, same branch)
+
+Every finding was fixed **after** its probe had been reproduced, and each fix ships
+with a test that fails on the old code. Original probes were re-run at the end.
+
+### 6.1 What changed, per finding
+
+| # | Fix | Where | Test |
+|---|---|---|---|
+| **F1a** | `extract_to` validated as a relative path at **parse** time and re-proved inside the version directory at install time; an `installed/<version>` symlink is refused | `updates/manifest.py`, `updates/installer.py` | `test_audit_update_containment.py` |
+| **F1b** | The import test (which executes package code) runs **only** when the signature verified against a pinned key; otherwise skipped and reported | `updates/manager.py::_authenticated`, `installer._import_test` | same |
+| **F1c** | Unsigned manifests refused in `tofu` (explicit `insecure` remains the escape hatch); a `key_id`-only HMAC pin with no shared secret no longer verifies | `updates/manifest.py::verify_signature` | same |
+| **F2** | One boundary-safe containment module; used by the update server, sync server and installer | new `brain/util/safe_paths.py` | `test_audit_server_containment.py` |
+| **F3** | Update server refuses to start without a token (`--open` = read-only, POST disabled), constant-time token check, `release_dir` confined to `--publish-from` | `cloud/update_server/app.py` | same |
+| **F4** | One HTTP client that **refuses** redirects on any credentialed request; credential-free redirects are re-checked against policy | new `brain/util/http.py`; `integrations.py`, `providers.py`, `cloud/protocol.py` | `test_audit_redirect_credentials.py` |
+| **F5** | `.env`, `.env.*`, `api_keys.json`, `secrets.*`, `credentials.*`, `service-account.json`, `terraform.tfstate`, `.pgpass`, `*.pem`, `*.key`, `*.der`, `*.pkcs12` refused; templates stay readable | `agent/host_tools.py` | `test_audit_ledger_and_paths.py` |
+| **F6** | Per-minute window persisted; corrupt ledger fails **closed** | `agent/ledger.py` | same |
+| **F7** | `Session.step_up_ok` now has a setter (`Ceremony.step_up`, `brain unlock --step-up`) and is consumed by one high-risk call | `memory/vault.py`, `identity/ceremony.py`, `agent/tools.py`, `cli/main.py` | `test_audit_step_up_and_packaging.py` |
+| **F8** | `run_sync` and `check_updates` declare `net.host` | `agent/tools.py` | same |
+| **F9** | `packages.find` over `brain.*` — wheel now carries 52 modules; `nila`/`brain` exit 0 from a clean venv | `pyproject.toml` | same |
+| **F10** | `build/`, `dist/`, `*.egg-info` excluded from the ZIP and asserted against | `scripts/build_package.py` | same |
+| **F11** | Fallback runner honours `pytest.skip`; ZIP tests skip before opening a missing file; README counts corrected | `scripts/run_tests.py`, `tests/test_package_integrity.py`, `README.md` | suite output |
+
+**New/changed behaviour worth knowing as a user**
+
+- `brain unlock --step-up` authorises exactly one high-risk action (e.g. `/export`).
+- An update channel in `tofu` mode no longer accepts an unsigned manifest. If you
+  serve your own unsigned feed locally, use `--mode insecure` and know what that means.
+- The update server needs `BRAIN_UPDATE_TOKEN` set (or `--open` for read-only serving).
+- `.env`, `*.pem`, `*.key` files are no longer readable by the agent; `.env.example`
+  still is.
+
+### 6.2 Verification after the fixes
+
+| Check | Result |
+|---|---|
+| Full suite (real pytest) | **633 passed, 2 skipped** in 72 s |
+| Same suite in a clean room, extracted from the delivered ZIP | **633 passed, 2 skipped** |
+| Fallback runner (`scripts/run_tests.py`), was 2 false failures | **64 passed, 0 failed** |
+| Original probes F1a/F1b/F1c/F5/F6 re-run | all **BLOCKED** |
+| Original probes F2 (both servers) / F3 re-run | **403 / 401 / 403** — no fixture served, nothing published |
+| Wheel in a clean venv | 52 modules; `nila --help` and `brain --help` exit **0** |
+| ZIP built twice from the same tree | byte-identical (`ad6eefbf…`) |
+| ZIP contents | 130 entries, 86/86 source modules, 0 build artifacts, 0 caches |
+
+### 6.3 Still open — not fixed deliberately
+
+- **`tofu` still trusts the first connection.** Fixing that needs a publisher key
+  shipped in the package; it is a release-process decision, not a code edit.
+- **`insecure` mode still installs anything it is given.** It is now loud and
+  refuses to execute the import test, but it remains an escape hatch by design.
+- **Never-read list is still a list.** A secret copied to `plans.txt` is readable;
+  suffix matching is a mitigation, not a boundary.
+- **No post-apply health check / automatic rollback** (T25).
+- **The 13 user-confirmed backlog groups** in `NILA_V02_PLAN_DRAFT_TA.md`
+  (online-egress boundary, stale key after re-login, audit-hash mutation, WAL and
+  attachment backup gaps, TOTP replay, negative `Content-Length`, project 200 cap,
+  integration approval replay, sync status/exit) were **out of scope** for this
+  round and are untouched.
+- All device/production checks from §3 remain unverified.
