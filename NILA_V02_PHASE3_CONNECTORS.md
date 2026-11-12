@@ -1,9 +1,9 @@
 # #3 — Connectors screen: what changed
 
-**Archive:** `Nila-verification-e6c5f631.zip`
-**SHA-256:** `e6c5f63145ee76be8a2a5bbaf3c4970d7adf3aadd716e515d288e5036207cc48`
-**Built by:** `scripts/build_package.py` → 134 entries, 90/90 source modules, 491,460 bytes
-**Tests I wrote:** `tests/test_connectors.py`, 28 tests (your acceptance tests override mine)
+**Archive:** `Nila-verification-93bbfb84.zip`
+**SHA-256:** `93bbfb84d21d418ec45636920265d5001f1fcfbcfc251241ad59f1d7268816ca`
+**Built by:** `scripts/build_package.py` → 134 entries, 90/90 source modules, 493,374 bytes
+**Tests I wrote:** `tests/test_connectors.py`, 33 tests (your acceptance tests override mine)
 
 ## Every file changed
 
@@ -51,6 +51,11 @@
 4. **The key was read before the approval.** A refused `brain connectors key`
    consumed a stdin line that belonged to the prompt; the order is now approve,
    then read.
+5. **A key entered in the screen never reached the router.** The screen read the
+   vault; the router built its provider from the environment. You could add a
+   Gemini key, see "key ending 7890", and still be told "no online key set".
+   `key_material()` is now the single answer, `build_provider()` accepts a key in
+   the config, and a switched-off connector lends no key.
 
 ## Honest limits
 
