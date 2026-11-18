@@ -127,27 +127,23 @@ FEATURES: List[Dict[str, Any]] = [
              "the same brain as the terminal. What is missing is YOUR bot token and "
              "chat id (`brain telegram how`), then `nila-phone.bat` keeps it open."},
 
-    # ---- left out on purpose ----------------------------------------- #
-    {"group": "later", "label": "Screen viewing (screenshot -> read it back)",
-     "state": "missing", "note": "v3: the highest-risk feature, and the owner "
-                                "has not asked for it yet."},
-    {"group": "later", "label": "Always-on wake word",
-     "state": "missing", "note": "refused by design: an all-day microphone is a "
-                                 "battery and privacy cost. Press-to-talk exists."},
-    {"group": "later", "label": "Music player",
-     "state": "missing", "note": "v3, and the last thing on the list."},
-    {"group": "later", "label": "Gmail / Drive / Calendar write (OAuth)",
-     "state": "missing", "note": "v3: one consent screen per service."},
-    {"group": "later", "label": "Phone app (Android) and multi-user",
-     "state": "missing", "note": "v3."},
-    {"group": "later", "label": "Neural speaker model (ECAPA / x-vector)",
-     "state": "missing", "note": "v3: would raise the ceiling above the current "
-                                 "MFCC+pitch voiceprint."},
-    {"group": "later", "label": "OCR for scanned pages, and ffmpeg scene detect",
-     "state": "missing", "note": "not bundled: a scanned page is called scanned, "
-                                 "and the ffmpeg command is given instead."},
-    {"group": "later", "label": "Fine-tuned Tamil model, local mesh (2 PCs)",
-     "state": "missing", "note": "v3."},
+    # ---- left out on purpose, or built in the safe half --------------- #
+    {"group": "later", "label": 'Screen viewing (screenshot -> read it back)', "state": 'done', "check": 'brain.agent.screen:read',
+     "note": 'built as the safe half: Nila never captures your screen. You press Win+Shift+S, give her the picture (`brain screen`), and she reads the words in it. What the picture *means* still needs a vision model.'},
+    {"group": "later", "label": 'Always-on wake word', "state": 'missing',
+     "note": 'refused by design: an all-day microphone is a battery and privacy cost. Press-to-talk exists.'},
+    {"group": "later", "label": 'Music player', "state": 'done', "check": 'brain.agent.music:library',
+     "note": "plays the songs already on your PC (`brain music`): tags read from the files, the folder remembered once, and Windows' own player does the playing. No account, no download, no background daemon."},
+    {"group": "later", "label": 'Gmail / Drive / Calendar write (OAuth)', "state": 'partial', "check": 'brain.util.ics:add_event',
+     "note": 'calendar is WRITTEN now, but to a local .ics with a stable UID and a rising SEQUENCE, so importing it again replaces the event instead of duplicating it - `brain calendar --add`. Writing straight into Google still needs OAuth, and Gmail and Drive are not started.'},
+    {"group": "later", "label": 'Phone app (Android) and multi-user', "state": 'missing',
+     "note": 'v3. Telegram already answers from the phone (`nila-phone.bat`), which is the part he asked for; a native app is a different project.'},
+    {"group": "later", "label": 'Neural speaker model (ECAPA / x-vector)', "state": 'missing',
+     "note": 'v3: would raise the ceiling above the current MFCC+pitch voiceprint, and it needs a neural model download, so it is not pretended here.'},
+    {"group": "later", "label": 'OCR for scanned pages, and ffmpeg scene detect', "state": 'partial', "check": 'brain.agent.ocr:read',
+     "note": "both halves are here without a binary: scanned PDF pages are read by the built-in OCR (`brain ocr`, pure-Python PNG decode) and scene cuts are read from the video's own keyframe index (`brain media scenes`). What still wants a decoder: comparing every frame to the next, and finding silence - getffmpeg.bat installs ffmpeg, then --run cuts without re-encoding."},
+    {"group": "later", "label": 'Fine-tuned Tamil model, local mesh (2 PCs)', "state": 'partial', "check": 'tools.sync_lan:join_code',
+     "note": 'the 2-PC half is built the way he will use it: sync-host.bat on one PC, sync-join.bat on the other with the address and the six-group code, sync-now.bat to catch up. Same Wi-Fi only, nothing to the internet, ciphertext end to end. The fine-tuned Tamil model is still v3 - it needs a training set and a GPU.'},
 ]
 
 #: Fill these in and the `partial` rows above become `done`. Kept separate so the

@@ -1002,6 +1002,159 @@ def cmd_recall(args, ui: UI) -> int:
     return 0
 
 
+def cmd_media(args, ui: UI) -> int:
+    """What a video is, where its scene cuts are, and how to cut it without re-encoding."""
+    from ..agent import media, video_edit
+
+    words = list(getattr(args, "words", []) or [])
+    action = "scenes"
+    path_text = ""
+    for word in words:
+        if word.lower() in ("scenes", "info", "cuts"):
+            action = word.lower()
+        else:
+            path_text = word
+    if not path_text:
+        ui.err("give a video: brain media scenes <file>")
+        return 2
+    path = Path(path_text).expanduser()
+    try:
+        if args.trim:
+            try:
+                start_text, end_text = args.trim.split(",", 1)
+                start, end = float(start_text), float(end_text)
+            except ValueError:
+                ui.err("--trim wants two numbers in seconds, like --trim 90,135")
+                return 2
+            out = video_edit.trim(path, start, end,
+                                  Path(args.out or (path.parent / f"{path.stem}-cut{path.suffix}")),
+                                  run=args.run)
+            ui.emit(out) if args.json else print(out["command"])
+            if not out.get("ran"):
+                print("\n" + out["note"])
+            return 0 if out["ok"] else 1
+        plan = video_edit.plan(path)
+    except video_edit.VideoError as exc:
+        ui.err(str(exc))
+        return 2
+    if args.json:
+        ui.emit(plan)
+        return 0
+    if plan.get("cuts"):
+        print(f"{len(plan['cuts'])} scene start(s) in {path.name}, "
+              f"from the video's own index (nothing decoded):")
+        for cut in plan["cuts"][: args.limit]:
+            print(f"  {cut['at_s']:>9.2f} s   keyframe {cut['frame']}")
+        if len(plan["cuts"]) > args.limit:
+            print(f"  ... and {len(plan['cuts']) - args.limit} more (--limit)")
+        print(f"\n{plan['how']}")
+    else:
+        print(f"no scene index in {path.name} - the container does not list its keyframes")
+    if plan.get("ffmpeg") and (plan.get("scene_detect") or {}).get("times"):
+        detect = plan["scene_detect"]
+        print(f"\nffmpeg's own comparison found {detect['count']} change(s) "
+              f"(threshold {detect['threshold']}):")
+        for moment in detect["times"][: args.limit]:
+            print(f"  {moment:>9.2f} s")
+    elif not plan.get("ffmpeg"):
+        print("\n" + plan["scene_detect_refused"])
+    print("\nTo cut a piece without re-encoding (the picture does not change):")
+    print(f"  brain media scenes {path.name} --trim 90,135 --run")
+    return 0
+
+
+def cmd_screen(args, ui: UI) -> int:
+    """Read a screenshot the owner took. It never captures on its own."""
+    from ..agent import screen
+
+    if args.how or not args.path:
+        info = screen.how()
+        if args.json:
+            ui.emit(info)
+            return 0
+        print("Nila does not watch your screen. You show her a picture:")
+        for line in screen.shortcut_lines():
+            print("  " + line)
+        print(f"\n  reads : {info['reads']}")
+        print(f"  cannot: {info['cannot']}")
+        print(f"  why   : {info['why_not_always_on']}")
+        return 0
+    try:
+        out = screen.read(args.path)
+    except screen.ScreenError as exc:
+        ui.err(str(exc))
+        return 2
+    if args.json:
+        ui.emit(out)
+        return 0 if out["ok"] else 1
+    print(out["text"] or "(no words found in that picture)")
+    print()
+    print(f"[{out['engine']} · confidence {out['confidence']}]", file=sys.stderr)
+    if args.note:
+        print(out["note"], file=sys.stderr)
+    return 0 if out["ok"] else 1
+
+
+def cmd_music(args, ui: UI) -> int:
+    """Play a song from the owner's own folders - no account, no download."""
+    from ..agent import music
+
+    folders = list(args.folder or [])
+    if args.add_folder:
+        from ..config import Config as _Config
+        cfg = _Config.load(args.home)
+        agent = dict(cfg.agent or {})
+        kept = [str(f) for f in (agent.get("music_folders") or [])]
+        for folder in args.add_folder:
+            path = Path(folder).expanduser()
+            if not path.is_dir():
+                ui.err(f"that is not a folder: {path}")
+                return 2
+            if str(path) not in kept:
+                kept.append(str(path))
+        agent["music_folders"] = kept
+        cfg.agent = agent
+        cfg.save()
+        if not args.words and not args.list:
+            print("music folders:")
+            for folder in kept:
+                print(f"  {folder}")
+            return 0
+    if not folders:
+        from ..config import Config as _Config
+        cfg = _Config.load(args.home)
+        folders = [str(f) for f in ((cfg.agent or {}).get("music_folders") or [])]
+    if not folders:
+        folders = [str(Path.home() / "Music")]
+    songs = music.library(folders)
+    if not songs:
+        ui.err("no songs found in " + ", ".join(folders) + "\n"
+               "  Tell me where they are once: brain music --add-folder \"D:/Songs\"")
+        return 2
+    hits = music.find(songs, " ".join(args.words))
+    if args.json:
+        ui.emit({"ok": bool(hits), "songs": len(songs),
+                 "matches": hits[: args.limit]})
+        return 0 if hits else 1
+    if not hits:
+        ui.err(f"nothing matched {' '.join(args.words)!r} in {len(songs)} songs")
+        return 1
+    if not args.play:
+        for song in hits[: args.limit]:
+            print(music.describe(song))
+        if len(hits) > args.limit:
+            print(f"  ... and {len(hits) - args.limit} more")
+        print(f"\n{len(hits)} match(es). Add --play to play the first one.")
+        return 0
+    try:
+        out = music.play(hits[0], dry_run=args.dry_run)
+    except music.MusicError as exc:
+        ui.err(str(exc))
+        return 2
+    print(("playing: " if out["played"] else "would play: ") + out["path"])
+    return 0
+
+
 def cmd_search(args, ui: UI) -> int:
     """Search memory by meaning, using a local word-vector file. No download."""
     from ..memory.store import GloveWordVectorEmbedder, cosine
@@ -3701,6 +3854,37 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--tag")
     add_auth(sp)
     sp.set_defaults(func=cmd_recall)
+
+    sp = sub.add_parser("media", help="video: scene cuts, and cutting without re-encoding")
+    # `brain media scenes video.mp4` and `brain media video.mp4` must both work, so
+    # the file is found by asking which of the two words is a real file - not by
+    # demanding the sub-word, which the owner will not remember.
+    sp.add_argument("words", nargs="*", help="`scenes` and/or the video")
+    sp.add_argument("--path-file", default="", help=argparse.SUPPRESS)
+    sp.add_argument("--trim", default="", metavar="START,END",
+                    help="cut from START to END seconds (copies the stream)")
+    sp.add_argument("--out", default="", help="where the cut goes")
+    sp.add_argument("--run", action="store_true", help="actually write the file")
+    sp.add_argument("--limit", type=int, default=40, help="how many cuts to print")
+    sp.set_defaults(func=cmd_media)
+
+    sp = sub.add_parser("screen", help="read the words in a screenshot YOU took")
+    sp.add_argument("path", nargs="?", default="", help="the picture")
+    sp.add_argument("--how", action="store_true", help="what to press, and what this can do")
+    sp.add_argument("--note", action="store_true", help="also print what it cannot do")
+    sp.set_defaults(func=cmd_screen)
+
+    sp = sub.add_parser("music", help="play songs from your own folders (no account)")
+    sp.add_argument("words", nargs="*", help="words from the title or the artist")
+    sp.add_argument("--folder", action="append", default=[], metavar="PATH",
+                    help="where your music is (repeatable)")
+    sp.add_argument("--add-folder", action="append", default=[], metavar="PATH",
+                    help="remember this folder for next time")
+    sp.add_argument("--play", action="store_true", help="play the first match")
+    sp.add_argument("--dry-run", action="store_true", help="say what would play")
+    sp.add_argument("--list", action="store_true", help="list what is found")
+    sp.add_argument("--limit", type=int, default=20)
+    sp.set_defaults(func=cmd_music)
 
     sp = sub.add_parser("search", help="find a memory by MEANING (needs a word-vector file)")
     sp.add_argument("query", nargs="+")

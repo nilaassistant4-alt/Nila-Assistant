@@ -70,3 +70,9 @@ def test_every_panel_leaves_its_loading_state(srv):
     # the audit panel must have been REPLACED by its answer, not still loading:
     # a fresh vault may have nothing to list, which is also a real answer.
     assert "reading the audit log" not in (out.get("log_text") or "")
+    # stage 12: the calendar and the other PC are answered by the server too, and
+    # "no calendar set" / "not joined" are real answers, not placeholders
+    assert "reading the calendar" not in (out.get("calendar_text") or "")
+    assert "checking the other PC" not in (out.get("sync_text") or "")
+    assert "brain calendar --set" in (out.get("calendar_text") or "")
+    assert "sync-join.bat" in (out.get("sync_text") or "")

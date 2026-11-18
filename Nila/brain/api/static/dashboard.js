@@ -563,6 +563,43 @@ async function slow() {
         if (h.nudge) hb.append(el("div", h.nudge, "notice"));
       }
     } catch (e) { /* the panel keeps its own loading line */ }
+    // The calendar and the other PC: both are read-only panels. A failure in
+    // either leaves its own loading line rather than blanking the page.
+    try {
+      const cal = await api("/v1/calendar?when=today"), box = $("calbox");
+      if (box) {
+        box.replaceChildren();
+        if (!cal.configured) {
+          box.append(el("div", "no calendar set yet", "note"));
+          box.append(el("div", "brain calendar --set <your .ics file>", "note"));
+        } else {
+          box.append(el("div", (cal.label || "today") + ": "
+            + (cal.count ? cal.count + " event" + (cal.count === 1 ? "" : "s") : "nothing"),
+            "m"));
+          (cal.lines || []).slice(0, 4).forEach(line => box.append(el("div", line, "note")));
+          if (cal.error) box.append(el("div", cal.error, "notice"));
+        }
+        box.append(el("div", "add an event: brain calendar --add \"Dentist\" --start \"tomorrow at 9\"", "note"));
+      }
+    } catch (e) { /* the panel keeps its loading line */ }
+    try {
+      const sy = await api("/v1/sync"), box = $("syncbox");
+      if (box) {
+        box.replaceChildren();
+        if (!sy.configured) {
+          box.append(el("div", "not joined to another PC", "note"));
+          box.append(el("div", "on the other PC run sync-host.bat, here sync-join.bat", "note"));
+        } else {
+          box.append(el("div", (sy.backend || "local") + " · " + (sy.url || sy.path || ""), "m"));
+          box.append(el("div", sy.last_synced
+            ? "last sync: " + new Date(sy.last_synced).toLocaleString()
+              + " · " + (sy.pending ? sy.pending + " waiting to go" : "nothing waiting")
+              + (sy.conflicts ? " · " + sy.conflicts + " conflict(s) kept" : "")
+            : "not synced yet - run sync-now.bat", "note"));
+          box.append(el("div", "sync now: sync-now.bat", "note"));
+        }
+      }
+    } catch (e) { /* ditto */ }
     // Progress counts come from the code, not from a promise.
     try {
       const p = await api("/v1/progress"), v2 = $("v2");

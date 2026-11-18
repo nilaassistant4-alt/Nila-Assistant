@@ -30,7 +30,8 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BATS = sorted(ROOT.glob("*.bat"))
 #: Scripts a first-run owner is told about, so each must exist and be mentioned.
-DOCUMENTED = {"start-nila.bat", "setup.bat", "report.bat", "nila-phone.bat"}
+DOCUMENTED = {"start-nila.bat", "setup.bat", "report.bat", "nila-phone.bat",
+              "sync-host.bat", "sync-join.bat", "sync-now.bat"}
 
 
 def test_there_are_bat_files_and_the_expected_ones_are_present():
@@ -144,6 +145,17 @@ def test_the_phone_window_exists_and_is_reachable_from_the_docs():
     assert "nila-phone.bat" in setup
 
 
+def test_the_two_pc_scripts_are_described_where_the_owner_looks():
+    start_here = (ROOT / "START_HERE.md").read_text()
+    for name in ("sync-host.bat", "sync-join.bat", "sync-now.bat"):
+        assert name in start_here, f"{name} is not mentioned in START_HERE.md"
+    # and the explanation has to say the two things he must type, not just name
+    # the files: an address and a join code
+    assert "join code" in start_here and "192.168" in start_here
+    setup = (ROOT / "setup.bat").read_text()
+    assert "sync-host.bat" in setup or "START_HERE.md" in setup
+
+
 def test_report_does_not_pretend_to_have_written_a_report_when_it_failed():
     text = (ROOT / "report.bat").read_text()
     assert "brain.py report" in text
@@ -156,3 +168,12 @@ def test_the_backup_script_never_deletes_and_says_its_folder():
     assert "--yes" in text and "--list" in text
     assert "D:\\Nila-backups" in text
     assert "del " not in text.lower().replace("delete", "")
+
+
+def test_getffmpeg_is_double_clickable_and_says_what_it_touches():
+    text = (ROOT / "getffmpeg.bat").read_text()
+    assert "tools\\getffmpeg.py" in text
+    assert "pause" in text                        # never closes on the owner
+    # it installs two files, not a system package, and says so before doing it
+    assert "installs nothing else" in text
+    assert "150 MB" in text                       # the size, before the wait

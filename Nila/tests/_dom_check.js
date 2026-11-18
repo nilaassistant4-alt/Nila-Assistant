@@ -32,6 +32,8 @@ const { JSDOM } = require(process.env.JSDOM_PATH || '/tmp/jsd/node_modules/jsdom
     capability_rows: doc.querySelectorAll('#caps .cap').length,
     audit_lines: doc.querySelectorAll('#log div').length,
     log_text: (doc.getElementById('log') || {}).textContent,
+    calendar_text: (doc.getElementById('calbox') || {}).textContent,
+    sync_text: (doc.getElementById('syncbox') || {}).textContent,
   };
   console.log(JSON.stringify(out));
   process.exit(0);

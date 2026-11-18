@@ -399,12 +399,23 @@ def analyze_video(path: Path) -> Dict[str, Any]:
                          "fps": 0.0, "frames": 0,
                          "note": ("read from the container without ffmpeg; frame "
                                   "rate and codec need ffprobe")})
-    # The honest edit plan: exact cut points are a decode job, not a guess.
+    # Scene starts, from the video's own keyframe index - no decode, no ffmpeg.
+    try:
+        from . import video_edit
+        scenes = video_edit.keyframes(path) if path.suffix.lower() in (
+            ".mp4", ".mov", ".m4v", ".3gp") else {"ok": False}
+    except Exception:                     # a broken container is "no cuts", not a crash
+        scenes = {"ok": False}
+    if scenes.get("ok"):
+        info["scene_cuts"] = {"count": scenes["count"],
+                             "times_s": scenes.get("times", [])[:200],
+                             "how": scenes.get("source", "")}
+    # The honest edit plan: the remaining parts are a decode job, not a guess.
     info["edit_plan"] = {
         "needs_ffmpeg": True,
-        "why": ("finding where every cut, scene change and silence sits means "
-                "decoding the file; ffmpeg does that in one pass without "
-                "re-encoding"),
+        "why": ("silence detection and a frame-by-frame scene comparison need a "
+                "decoder; ffmpeg does it in one pass without re-encoding. Scene "
+                "starts are reported above from the container itself"),
         "scene_detect": ("ffmpeg -i input.mp4 -filter:v "
                          "\"select='gt(scene,0.4)',showinfo\" -f null -"),
         "silence_detect": ("ffmpeg -i input.mp4 -af silencedetect=noise=-35dB:d=0.4 "

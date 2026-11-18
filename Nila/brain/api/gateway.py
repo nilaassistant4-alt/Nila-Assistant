@@ -563,6 +563,36 @@ class Gateway:
             from ..agent import progress
 
             return 200, progress.report()
+        if path == "/v1/sync" and method == "GET":
+            # Read-only: where this PC syncs to, and what the last sync did. No
+            # token, no address of a server it has not already been told about.
+            from ..cloud.protocol import SyncEngine, SyncError
+
+            cfg = dict(self.config.sync or {})
+            backend = str(cfg.get("backend") or "local")
+            try:
+                # The engine's own status: pending records, when it last synced,
+                # unresolved conflicts. Building it needs the unlocked vault,
+                # which the dashboard already has.
+                state = SyncEngine(self.config, self.memory, self.vault).status()
+            except SyncError as exc:
+                state = {"error": str(exc), "pending": 0, "last_synced": 0}
+            out = {"ok": True, "configured": backend not in ("", "local"), "backend": backend,
+                   "url": "", "path": "",
+                   "pending": state.get("pending", 0),
+                   "last_synced": state.get("last_synced", 0),
+                   "conflicts": state.get("unresolved_conflicts", 0),
+                   "device": state.get("device_id", ""),
+                   "last": {}}
+            if backend in ("http", "https", "cloud", "s3"):
+                url = str(cfg.get("url") or "")
+                local = url.startswith(("http://127.", "http://192.168.",
+                                        "http://10.", "http://localhost"))
+                out["url"] = url if local else ""
+                out["masked"] = bool(url) and not local
+            elif backend in ("local", "dir", "folder", "nas"):
+                out["path"] = str(cfg.get("path") or "")
+            return 200, out
         if path == "/v1/speak" and method == "POST":
             from ..util import speech
 

@@ -20,6 +20,7 @@ import os
 import random
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import time
@@ -803,6 +804,110 @@ def main() -> int:
         return PASS, "set_mode present"
 
     check("strict: mode can be switched", strict_roundtrip)
+
+    # ---- 30. stage 12: the four rows that stopped saying "not built" ------ #
+    def photos_and_scans():
+        """A page written with known words, then read back - the whole pipeline."""
+        import importlib.util
+
+        from brain.agent import ocr
+
+        spec = importlib.util.spec_from_file_location(
+            "retest_text_image", ROOT / "tools" / "text_image.py")
+        page = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(page)
+        text = "INVOICE 42\nTotal: 1250"
+        out_png = Path(home) / "retest-page.png"
+        width, height, grey = page.render_grey(text)
+        page.write_png(out_png, width, height, grey)
+        read_back = ocr.read(out_png)
+        pdf = page.write_scanned_pdf(Path(home) / "retest-scan.pdf", text)
+        from_pdf = ocr.read(pdf)
+        ok = read_back["text"] == text and from_pdf["text"] == text
+        return (PASS if ok else FAIL,
+                f"png {read_back['text']!r} (conf {read_back['confidence']}), "
+                f"scanned pdf read={from_pdf['ok']}, engine={read_back['engine']}")
+
+    check("stage 12: a picture and a scanned PDF are read here", photos_and_scans)
+
+    def two_pcs():
+        """The reference server on a free port, a push from this vault, then a GET."""
+        import socket
+
+        import urllib.request
+
+        from brain.cloud.protocol import SyncEngine
+
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        token = "retest-" + "t" * 20
+        data = Path(home) / "retest-server"
+        env = dict(os.environ, BRAIN_SYNC_TOKEN=token)
+        proc = subprocess.Popen([sys.executable, str(ROOT / "cloud" / "sync_server" / "app.py"),
+                                 "--port", str(port), "--data", str(data)],
+                                env=env, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1)
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            else:
+                return SKIP, "the sync server did not start here"
+            os.environ["BRAIN_SYNC_TOKEN"] = token
+            config.sync = {"backend": "http", "url": f"http://127.0.0.1:{port}",
+                           "token_env": "BRAIN_SYNC_TOKEN"}
+            memory.remember("re-test: the shop rent is 8000 rupees")
+            report = SyncEngine(config, memory, vault).sync()
+            ok = report["pushed"] >= 1 and not report["errors"]
+            return (PASS if ok else FAIL,
+                    f"pushed={report['pushed']} pulled={report['pulled']} "
+                    f"conflicts={report['conflicts']} errors={len(report['errors'])}")
+        finally:
+            proc.terminate()
+            os.environ.pop("BRAIN_SYNC_TOKEN", None)
+            config.sync = {}
+
+    check("stage 12: two PCs sync over HTTP, encrypted", two_pcs)
+
+    def calendar_written():
+        import datetime as _dt
+
+        from brain.util import ics
+
+        path = Path(home) / "retest-calendar.ics"
+        first = ics.add_event(path, "Retest dentist", _dt.datetime(2026, 11, 6, 10, 30),
+                              end=_dt.datetime(2026, 11, 6, 11, 30))
+        second = ics.update_event(path, first["uid"], summary="Retest dentist moved",
+                                  start=_dt.datetime(2026, 11, 6, 12, 0))
+        events = ics.read_events(path)
+        raw = path.read_text()
+        ok = (len(events) == 1 and second["sequence"] == 1
+              and events[0].end == _dt.datetime(2026, 11, 6, 13, 0)
+              and raw.count("BEGIN:VEVENT") == 1)
+        return (PASS if ok else FAIL,
+                f"uid kept={second['uid'] == first['uid']}, sequence={second['sequence']}, "
+                f"length kept={events[0].end.hour - events[0].start.hour}h")
+
+    check("stage 12: the calendar is written with a stable UID", calendar_written)
+
+    def meaning_search():
+        from brain.memory.store import GloveWordVectorEmbedder, cosine
+
+        vectors = Path(home) / "retest.wordvec"
+        vectors.write_text("bike 1.0 0.0\nrepair 0.0 1.0\nscooter 1.0 0.05\n"
+                           "rent 0.0 0.0\n")
+        embedder = GloveWordVectorEmbedder(vectors)
+        query = embedder.embed("scooter repair")
+        ok = cosine(query, embedder.embed("bike repair")) > 0.5
+        return (PASS if ok else FAIL,
+                f"{embedder.name}, coverage {embedder.coverage('scooter repair'):.2f}")
+
+    check("stage 12: memory can be searched by meaning, offline", meaning_search)
 
     memory.close()
     vault.lock()

@@ -30,9 +30,23 @@ with a newer version never touches your data.
 | `nila-cmd.bat` | a command window with Nila's settings loaded | for `python brain.py …` |
 | `report.bat` | writes a report (no secrets inside) | when something is wrong |
 | `backup-to-d.bat` | dated backup **and** a real restore check | weekly |
+| `sync-host.bat` | shares this PC's memory with your **other PC** on the same Wi-Fi | on the PC that has the memory |
+| `sync-join.bat` | joins this PC to the other one (type the address and the join code) | once, on the second PC |
+| `sync-now.bat` | syncs now, both ways | when you have added things |
 
 Also present: `move-to-d.bat` (move the vault to another drive by copying and verifying,
 never deleting) and `install-local-ai.bat` (Ollama + a small model).
+
+### Two PCs, one memory
+
+1. On the PC that has your memory: double-click **`sync-host.bat`**. It prints an
+   **address** (`192.168.1.5`), a **port**, and a **join code** of six groups of four.
+2. On the other PC: double-click **`sync-join.bat`** and type those two things.
+3. On either PC: **`sync-now.bat`** whenever you want them to catch up.
+
+Both PCs must be on the same Wi-Fi. Nothing goes to the internet, and what travels
+is already encrypted: the sharing PC cannot read it either. A public address is
+refused on purpose.
 
 Every one of them: sets UTF-8, finds the right Python (`py -3` or `python`), says plainly if
 Python is missing, keeps the window open, and quotes paths so `C:\Users\Some Name\` works.

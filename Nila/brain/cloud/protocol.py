@@ -237,7 +237,19 @@ def build_store(config: Config, vault: Optional[Vault] = None) -> BlobStore:
         token_env = cfg.get("token_env", "BRAIN_SYNC_TOKEN")
         token = os.environ.get(token_env, "") or cfg.get("token", "")
         if not token:
-            raise SyncError(f"sync token missing: set ${token_env} (or sync.token)")
+            # `sync-join.bat` writes the token next to the vault, so the owner
+            # never has to set an environment variable (and never types one in a
+            # window where a screenshot would keep it). Environment first: a
+            # test or a script can always override it.
+            saved = Path(getattr(config, "home", "") or "") / "sync-join-code.txt"
+            if saved.is_file():
+                try:
+                    token = saved.read_text(encoding="utf-8").strip()
+                except OSError:
+                    token = ""
+        if not token:
+            raise SyncError(f"sync token missing: run sync-join.bat once, or set "
+                            f"${token_env} (or sync.token)")
         return HttpBlobStore(url, token, timeout=float(cfg.get("timeout", 30)),
                              verify_tls=bool(cfg.get("verify_tls", True)))
     raise SyncError(f"unknown sync backend: {kind}")
