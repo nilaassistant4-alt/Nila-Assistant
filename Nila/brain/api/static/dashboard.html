@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nila</title><link rel="stylesheet" href="/dashboard.css"></head>
+<body>
+<section id="left">
+  <h2>Projects</h2>
+  <div id="resume" class="note"></div>
+  <div id="plist"></div>
+  <div class="row"><input id="ptitle" maxlength="120" placeholder="New project or idea…"><button id="padd">Add</button></div>
+  <div id="pdetail"></div>
+  <h2>Files on this PC</h2><div id="path"></div><div id="files"></div>
+</section>
+<section id="core">
+  <canvas id="c"></canvas>
+  <div id="chat">
+    <div id="tag">NILA</div>
+    <div id="msgs"></div>
+    <div id="modebar">
+      <label><input type="radio" name="mode" value="auto" checked> Auto</label>
+      <label><input type="radio" name="mode" value="local"> This PC only</label>
+      <label><input type="radio" name="mode" value="online"> Online (Gemini)</label>
+    </div>
+    <div class="row"><textarea id="msg" rows="2" maxlength="8000" placeholder="Ask Nila, save an idea, or say “resume my project”…"></textarea><button id="send">Send</button></div>
+  </div>
+</section>
+<section id="right">
+  <div id="banner" class="banner" hidden>
+    <span id="bannertext"></span>
+    <button id="bannerok">I am still here</button>
+  </div>
+  <h2>System</h2><div id="st"></div>
+  <h2>Online AI today</h2><div id="bud">…</div>
+  <h2>Connectors</h2>
+  <div id="cx" class="notice">…</div>
+  <div id="cxgate" hidden>
+    <div class="notice" id="cxwhat"></div>
+    <div class="row"><input id="cxpass" type="password" placeholder="passphrase (for this check only)"></div>
+    <div class="row"><input id="cxtotp" inputmode="numeric" maxlength="6" placeholder="authenticator code"></div>
+    <div class="row"><button id="cxgo">Approve</button><button id="cxno" class="mini">Cancel</button></div>
+  </div>
+  <div id="cxerr" class="notice"></div>
+  <h2>Standing instructions</h2>
+  <div id="instr"></div>
+  <div class="row"><input id="itxt" maxlength="280" placeholder="e.g. Call me Anna"></div>
+  <div class="row"><button id="iadd">Add instruction</button></div>
+  <div id="ierr" class="notice"></div>
+  <h2>Approvals</h2><div id="cs">none</div>
+  <h2>Health</h2><div id="hl"></div><button id="rep">Full report</button><pre id="repbox" hidden></pre>
+  <h2>What Nila can do</h2><div id="caps"></div>
+  <h2>Audit log</h2><div id="log"></div>
+  <div class="row"><button id="stopnila" class="mini">Stop Nila</button></div>
+</section>
+<script src="/dashboard.js"></script></body></html>

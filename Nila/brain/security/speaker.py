@@ -180,25 +180,60 @@ class Decision:
 class SpeakerLock:
     """The single enrolled voice, the pending challenges, and the decisions."""
 
-    def __init__(self, path: Path | str, store: Any = None):
+    META_KEY = "speaker_profile"
+
+    def __init__(self, path: Path | str, store: Any = None, vault: Any = None):
         self.path = Path(path)
         self.store = store
+        #: The vault's sealed `meta` is where the voiceprint actually lives.
+        #: A memory store has no `get/put` - it was passed here by mistake, and
+        #: that mistake meant `brain voice enrol` crashed on the real path.
+        self.vault = vault
         self._pending: Dict[str, Dict[str, Any]] = {}
         self.load()
 
     # -- persistence ---------------------------------------------------- #
     def load(self) -> None:
         self.profile: Dict[str, Any] = {}
-        if not self.path.exists():
-            return
+        # With a sealed store the voiceprint lives in the vault, NOT in this file:
+        # `speaker.json` is only a marker for an unsealed (test) setup. Checking
+        # for the file first made every new session forget the enrolled voice -
+        # which meant the lock said "nobody is enrolled" after a successful
+        # `brain voice enrol`, and refused the owner on the next run.
         try:
-            if self.store is not None:
-                raw = self.store.get("speaker_profile")
-                self.profile = json.loads(raw) if raw else {}
-            else:                              # pragma: no cover - tests use the store
-                self.profile = json.loads(self.path.read_text())
+            raw = self._read_raw()
+            self.profile = json.loads(raw) if raw else {}
         except Exception:
             self.profile = {}
+
+    def _read_raw(self) -> str:
+        if self.vault is not None:
+            return str(self.vault.meta_get(self.META_KEY, "") or "")
+        if self.store is not None:
+            return str(self.store.get(self.META_KEY) or "")
+        if self.path.exists():                 # pragma: no cover - unsealed test only
+            return self.path.read_text()
+        return ""
+
+    def _write_raw(self, raw: str) -> None:
+        if self.vault is not None:
+            self.vault.meta_set(self.META_KEY, raw)
+            return
+        if self.store is not None:
+            self.store.put(self.META_KEY, raw)
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)   # pragma: no cover
+        self.path.write_text(raw)
+
+    def _delete_raw(self) -> None:
+        if self.vault is not None:
+            self.vault.meta_set(self.META_KEY, "")
+            return
+        if self.store is not None:
+            self.store.delete(self.META_KEY)
+            return
+        if self.path.exists():                 # pragma: no cover
+            self.path.unlink()
 
     def enrolled(self) -> bool:
         return bool(self.profile.get("centroid"))
@@ -221,7 +256,7 @@ class SpeakerLock:
     def enrol(self, samples: Sequence[float], rate: int,
               label: str = "owner") -> Dict[str, Any]:
         """Create the voiceprint. Only reachable while the vault is unlocked."""
-        if self.store is None:
+        if self.vault is None and self.store is None:
             raise SpeakerError("the voiceprint is stored sealed; unlock the vault first")
         seconds = len(samples) / float(rate or 1)
         if seconds < MIN_SECONDS:
@@ -266,17 +301,10 @@ class SpeakerLock:
                 "pitch_hz": self.profile["pitch_median"]}
 
     def _save(self) -> None:
-        if self.store is not None:
-            self.store.put("speaker_profile", json.dumps(self.profile))
-        else:                                  # pragma: no cover
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps(self.profile))
+        self._write_raw(json.dumps(self.profile))
 
     def reset(self) -> Dict[str, Any]:
-        if self.store is not None:
-            self.store.delete("speaker_profile")
-        elif self.path.exists():               # pragma: no cover
-            self.path.unlink()
+        self._delete_raw()
         self.profile = {}
         return {"ok": True, "enrolled": False}
 

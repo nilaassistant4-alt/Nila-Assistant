@@ -471,3 +471,63 @@ The encrypted store can live on any drive. If the drive is gone, Nila refuses
 instead of quietly creating an empty archive on C: - that would make a full
 history look deleted. Nothing is deleted on a schedule: `brain forget <id>`
 removes one record, when the owner says so.
+
+## Hearing you (v0.2, stage 7)
+
+    brain ears --status                 # is there a transcriber and a microphone?
+    brain ears --file me.wav            # transcribe a recording (no microphone needed)
+    brain ears --listen 5               # record 5 s and transcribe
+    brain talk                          # press once, say it, Nila does it
+    brain talk --text "nila open files" --show   # try the loop without a microphone
+
+`brain talk` is the whole loop: hear one sentence, put the same audio through the
+voice lock, then act. If the voice is not the enrolled one, the words are thrown
+away unused - they are never shown, forwarded or acted on.
+
+Three transcribers are recognised, most preferred first: **faster-whisper**,
+**openai-whisper** (best Tamil, slower on CPU) and **vosk** (50 MB, weakest Tamil).
+**None of them is installed by Nila** - downloading a model is the owner's decision:
+
+    pip install faster-whisper
+    pip install openai-whisper
+    pip install vosk            # plus a ta model from alphacephei.com
+
+Until one is installed, every command above says exactly that instead of pretending
+to listen. It is a wiring job waiting on one install, not a finished feature.
+
+    brain launcher --talk --write       # a press-to-talk icon (not an always-on mic)
+
+One press listens once, for a bounded number of seconds, then closes. On Windows
+the same file also goes into the Startup folder, so the Win key then typing "Nila"
+reaches it. An always-on wake word is still refused by design.
+
+## Finding a file (v0.2, stage 7)
+
+    brain find invoice                  # by name, under your home folder
+    brain find electricity --content    # look inside text files too
+    brain find bill --in "D:/Papers" --since 30
+
+Name search skips `.git`, `node_modules`, `AppData`, the recycle bin and similar
+folders. Reading inside files is opt-in, capped at 2 MB per file, and only for
+text-like extensions. The answer says how many files were actually checked, so
+"0 matches" after 12 files and after 120,000 are different answers. Nothing is
+opened and nothing is executed - it returns paths.
+
+## Opening an app (v0.2, stage 7)
+
+    brain open --list                   # every name Nila knows
+    brain open notepad --show           # what would run, without running it
+    brain open chrome
+
+Only names from a fixed table work (chrome, edge, firefox, notepad, calculator,
+explorer, files, word, excel, settings, paint, terminal); anything else is refused
+with the nearest name it does know, so "open" can never become a shell. Each app is
+started with `shell=False` and its own arguments. A name that is in the table but
+not installed here is reported as exactly that. To add your own:
+
+    {"agent": {"apps": {"studio": ["code", "--new-window"]}}}
+
+A spoken sentence is matched against a small verb list before anything runs:
+"Nila open notepad", "Nila find invoice", "Nila read D:/bill.pdf", "Nila stop",
+in English or Tamil. A sentence that does not match is answered with "I do not
+know how to ..." - never guessed into an action.

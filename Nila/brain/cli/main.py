@@ -1464,7 +1464,7 @@ def cmd_voice(args, ui: UI) -> int:
 
     config, vault = open_vault(args)
     memory = open_memory(config, vault)
-    lock = SpeakerLock(config.home / "speaker.json", store=memory)
+    lock = SpeakerLock(config.home / "speaker.json", vault=vault)
     action = (args.action or "status").lower()
     try:
         if action == "status":
@@ -1482,10 +1482,10 @@ def cmd_voice(args, ui: UI) -> int:
             source = args.file
             if source:
                 sample = _audio.load_audio(str(Path(source).expanduser()))
-                samples, rate = sample.samples, sample.rate
+                samples, rate = sample.samples, sample.sample_rate
             else:
                 sample = _audio.record_microphone(seconds=float(args.seconds or 3.0))
-                samples, rate = sample.samples, sample.rate
+                samples, rate = sample.samples, sample.sample_rate
             if action == "check":
                 decision = lock.judge(samples, rate)
                 ui.emit(decision.to_dict())
@@ -1603,6 +1603,25 @@ def cmd_launcher(args, ui: UI) -> int:
     from ..util import launcher
 
     config = Config.load(args.home)
+    if args.talk:
+        # The push-to-talk icon: one press, a bounded listen, then it closes.
+        try:
+            out = launcher.push_to_talk_launchers(
+                config.home, Path(args.out).expanduser() if args.out else None,
+                max_seconds=args.seconds)
+        except launcher.LauncherError as exc:
+            ui.err(str(exc))
+            return 2
+        if args.json:
+            ui.emit(out)
+        else:
+            what = out["written"]["talk"]
+            print(f"icon written: {what}")
+            if out["written"].get("startup"):
+                print(f"also in Startup: {out['written']['startup']}")
+            print(f"runs: {out['runs']}  (listens for {out['seconds']:.0f} s, then closes)")
+            print("\n" + out["note"])
+        return 0
     if args.plan or not args.write:
         plan = launcher.plan(config.home)
         if args.json:
@@ -1624,6 +1643,243 @@ def cmd_launcher(args, ui: UI) -> int:
     ui.emit(out)
     if not args.json:
         print("\n" + out["note"])
+    return 0
+
+
+def cmd_ears(args, ui: UI) -> int:
+    """Hearing, from the command line: what is installed, or one recording."""
+    from ..agent import ears
+
+    if args.status or (not args.listen and not args.file):
+        status = ears.available()
+        if args.json:
+            ui.emit(status)
+            return 0
+        print(f"Transcriber : {', '.join(status['engines']) or 'none installed'}")
+        print(f"Microphone  : {'yes' if status['microphone'] else 'no'}")
+        print(f"Best here   : {status.get('best') or 'nothing yet'}")
+        print("\n" + status["how"])
+        print("\n" + ears.help_text())
+        return 0
+
+    def _listen() -> Dict[str, Any]:
+        return ears.hear(seconds=float(args.listen or 5.0), language=args.lang,
+                         model_size=args.model, source=args.file or None)
+
+    try:
+        if args.listen and not args.file:
+            # A microphone is opened the way the vault is opened: after the owner
+            # proves they are there. The words are then still checked against the
+            # enrolled voice before anything is allowed to act on them.
+            _config, _vault = open_vault(args)
+            print("listening...", flush=True)
+            try:
+                heard = _listen()
+            finally:
+                _vault.lock()
+        else:
+            heard = _listen()
+    except (ears.EarsError, ears.AudioError, OSError) as exc:
+        ui.err(str(exc))
+        print("\n" + ears.help_text())
+        return 2
+
+    text = heard.get("text") or ""
+    if args.json:
+        ui.emit({k: v for k, v in heard.items() if k != "samples"})
+        return 0
+    print(f"[{heard.get('engine', '?')}] {heard.get('seconds', 0)} s -> "
+          f"{text if text else '(nothing heard)'}")
+    return 0 if text else 1
+
+
+def cmd_talk(args, ui: UI) -> int:
+    """One press of an icon: listen once, check the voice, act, answer aloud.
+
+    This is the whole of stage 7's loop in one place, and every refusal in it is
+    deliberate: no microphone or no transcriber means an honest line and exit 2;
+    a voice that is not the owner means the words are dropped before they are
+    used; a sentence that is not understood is answered, not guessed at.
+    """
+    from ..agent import ears
+    from ..agent import media
+    from ..security.speaker import SpeakerLock
+    from ..util import apps as appmod
+    from ..util import finder
+    from ..util import launcher as launchmod
+    from ..util import speech
+    from ..util.apps import AppError
+
+    config, vault = open_vault(args)
+    memory = open_memory(config, vault)
+
+    def answer(line: str) -> None:
+        if args.json:
+            return
+        print(line)
+        if not args.no_speak:
+            spoken = speech.speak_text(line, voice=args.speak_voice or "",
+                                       voice_dir=args.home / "voices")
+            if not spoken.get("spoken"):
+                print(f"(not spoken aloud: {spoken.get('reason', '')})")
+
+    try:
+        # ---- 1. hear it ---------------------------------------------------- #
+        if args.text:
+            heard = {"text": args.text, "samples": [], "rate": 0, "engine": "typed"}
+        else:
+            try:
+                heard = ears.hear(seconds=float(args.seconds or 6.0),
+                                  language=args.lang, model_size=args.model,
+                                  source=args.file or None)
+            except (ears.EarsError, ears.AudioError, OSError) as exc:
+                reason = str(exc)
+                if args.json:
+                    ui.emit({"ok": False, "stage": "hear", "error": reason})
+                else:
+                    answer(f"I could not hear you: {reason}")
+                return 2
+        said = (heard.get("text") or "").strip()
+        if not said:
+            answer("I heard nothing I could turn into words.")
+            return 1
+
+        # ---- 2. is it the owner? ------------------------------------------- #
+        if not args.skip_voice_check and heard.get("samples"):
+            lock = SpeakerLock(config.home / "speaker.json", vault=vault)
+            decision = lock.judge(heard["samples"], heard["rate"])
+            if not decision.ok:
+                if args.json:
+                    ui.emit({"ok": False, "stage": "voice", "verdict": decision.to_dict(),
+                             "words_used": False})
+                else:
+                    answer(f"I did nothing with that: {decision.reason}")
+                return 3
+
+        # ---- 3. what was asked? -------------------------------------------- #
+        spoken = launchmod.spoken_action(said)
+        action, argument = spoken.get("action", ""), spoken.get("argument", "")
+        result: Dict[str, Any] = {"ok": True, "heard": said, "action": action,
+                                 "argument": argument}
+        if not action:
+            answer(spoken.get("reason") or "I did not understand that.")
+            if args.json:
+                ui.emit({**result, "ok": False, "reason": spoken.get("reason")})
+            return 1
+
+        # ---- 4. do it ------------------------------------------------------ #
+        if action == "open":
+            try:
+                result["app"] = appmod.open_app(argument, config=config,
+                                                dry_run=args.show)
+                launched = result["app"]
+                if args.show:
+                    answer(f"{argument} would run: {' '.join(launched['would_run'])}")
+                else:
+                    answer(f"Opening {argument}.")
+            except AppError as exc:
+                result["ok"], result["error"] = False, str(exc)
+                answer(str(exc))
+        elif action == "find":
+            found = finder.search(args.search_root or Path.home(), argument,
+                                  limit=args.limit, content=args.content)
+            result["search"] = found
+            hits = found.get("hits") or []
+            if hits:
+                answer(f"Found {len(hits)}. First: {hits[0]['path']}")
+            else:
+                answer(f"Nothing matched '{argument}' in "
+                       f"{args.search_root or Path.home()}.")
+        elif action == "read":
+            target = Path(argument).expanduser()
+            if not target.is_file():
+                result["ok"] = False
+                answer(f"I could not find {target} - say 'nila find {argument}' first.")
+            else:
+                report = media.read_anything(target, limit=args.limit)
+                result["file"] = {k: v for k, v in report.items() if k != "text"}
+                answer(str(report.get("summary") or report.get("rendered")
+                           or f"{target.name} read."))
+        elif action == "stop":
+            answer("Stopping. Nothing else is done.")
+        else:
+            result["ok"] = False
+            answer(f"'{action}' is on the list for a later stage - it is not wired yet.")
+        if args.json:
+            ui.emit(result)
+        return 0 if result.get("ok", True) else 1
+    finally:
+        memory.close()
+        vault.lock()
+
+
+def cmd_find(args, ui: UI) -> int:
+    """Find a file by name, or by words inside it - without opening anything."""
+    from ..util import finder
+
+    query = " ".join(args.query or []).strip()
+    if not query:
+        ui.err("give something to look for: `brain find invoice`")
+        return 2
+    root = Path(args.in_ or Path.home()).expanduser()
+    if not root.is_dir():
+        ui.err(f"that folder is not there: {root}")
+        return 2
+    out = finder.search(root, query, limit=args.limit, content=args.content,
+                        newer_than_days=args.since or None)
+    if args.json:
+        ui.emit(out)
+        return 0
+    if not out.get("ok"):
+        ui.err(out.get("error", "search failed"))
+        return 2
+    hits = out.get("hits") or []
+    print(f"{len(hits)} hit(s) in {root}  ({out.get('scanned', 0):,} files checked"
+          f" in {out.get('seconds', 0)} s"
+          f"{'' if out.get('complete') else ', stopped at the cap'})")
+    for hit in hits:
+        print("  " + hit["path"])
+        if hit.get("snippet"):
+            print(f"     ... {hit['snippet']}")
+    if not hits:
+        print("  nothing matched. Add --content to look inside text files.")
+    return 0
+
+
+def cmd_open(args, ui: UI) -> int:
+    """Open an app from the fixed list - or say why it cannot be opened."""
+    from ..util import apps
+    from ..util.apps import AppError
+
+    config = Config.load(args.home)
+    if not args.app or args.list:
+        rows = apps.list_apps(config)
+        if args.json:
+            ui.emit({"apps": rows})
+            return 0
+        print(f"{'name':<12s} {'installed':<10s} command")
+        for row in rows:
+            mark = "yes" if row["installed"] else "no"
+            print(f"{row['name']:<12s} {mark:<10s} {row['command'] or '(none on this OS)'}")
+        print("\nOnly these names work. `brain open <name> --show` says what would run.")
+        return 0
+    try:
+        out = apps.open_app(args.app, config=config, dry_run=args.show)
+    except AppError as exc:
+        ui.err(str(exc))
+        return 2
+    if args.json:
+        ui.emit(out)
+        return 0 if out.get("ok") else 1
+    if out.get("dry_run"):
+        print("would run : " + " ".join(out["would_run"]))
+        print("installed : " + ("yes" if out.get("installed") else "no"))
+        if not out.get("ok"):
+            print("note      : " + out.get("error", ""))
+            return 1
+        print("\nNothing was started. Drop --show to really open it.")
+        return 0
+    print(f"opened {out['name']} (pid {out['pid']}). {out['note']}")
     return 0
 
 
@@ -2293,7 +2549,56 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--write", action="store_true", help="write the launcher files")
     sp.add_argument("--plan", action="store_true", help="show what is possible here")
     sp.add_argument("--out", default="", help="where to write them (default: Desktop)")
+    sp.add_argument("--talk", action="store_true",
+                    help="write the press-to-talk icon instead of the start icon")
+    sp.add_argument("--seconds", type=float, default=8.0,
+                    help="how long one press listens (default 8)")
     sp.set_defaults(func=cmd_launcher)
+
+    sp = sub.add_parser("ears", help="hear you: speech to text (needs a transcriber)")
+    sp.add_argument("--status", action="store_true", help="what is installed here")
+    sp.add_argument("--listen", type=float, nargs="?", const=5.0, default=None,
+                    help="record N seconds (default 5) and transcribe")
+    sp.add_argument("--file", default="", help="transcribe a WAV instead of the mic")
+    sp.add_argument("--lang", default="ta", help="ta or en (default ta)")
+    sp.add_argument("--model", default="small", help="whisper size: tiny/base/small/medium")
+    add_auth(sp)
+    sp.set_defaults(func=cmd_ears)
+
+    sp = sub.add_parser("talk", help="press once, say it, Nila does it (push-to-talk)")
+    sp.add_argument("--seconds", type=float, default=6.0,
+                    help="how long to listen, once (default 6)")
+    sp.add_argument("--file", default="", help="use a WAV instead of the microphone")
+    sp.add_argument("--text", default="", help="type the sentence instead (for testing)")
+    sp.add_argument("--lang", default="ta", help="ta or en (default ta)")
+    sp.add_argument("--model", default="small", help="whisper size")
+    sp.add_argument("--no-speak", action="store_true", help="do not answer aloud")
+    sp.add_argument("--speak-voice", default="", help="an installed SAPI/Piper voice name")
+    sp.add_argument("--show", action="store_true", help="for 'open': say, do not run")
+    sp.add_argument("--skip-voice-check", action="store_true", help=argparse.SUPPRESS)
+    sp.add_argument("--search-root", default="", metavar="DIR",
+                    help="where 'find' looks (default: your home folder)")
+    sp.add_argument("--content", action="store_true", help="for 'find': look inside files")
+    sp.add_argument("--limit", type=int, default=20)
+    add_auth(sp)
+    sp.set_defaults(func=cmd_talk)
+
+    sp = sub.add_parser("find", help="find a file by name or by words inside it")
+    sp.add_argument("query", nargs="*", help="part of a name, or words to look for")
+    sp.add_argument("--in", dest="in_", default="", metavar="DIR",
+                    help="where to look (default: your home folder)")
+    sp.add_argument("--content", action="store_true", help="look inside text files too")
+    sp.add_argument("--limit", type=int, default=20)
+    sp.add_argument("--since", type=int, default=0, metavar="DAYS",
+                    help="only files changed in the last N days")
+    sp.set_defaults(func=cmd_find)
+
+    sp = sub.add_parser("open", help="open an app from the fixed list")
+    sp.add_argument("app", nargs="?", default="", help="chrome, notepad, calculator ...")
+    sp.add_argument("--list", action="store_true", help="show every name I know")
+    sp.add_argument("--show", action="store_true",
+                    help="say what would run, without running it")
+    sp.set_defaults(func=cmd_open)
 
     sp = sub.add_parser("web", help="free connectors: weather, wikipedia, youtube, rss")
     sp.add_argument("what", nargs="?", default="pack",

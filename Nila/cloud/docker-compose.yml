@@ -1,0 +1,44 @@
+# Reference deployment of both cloud back-ends.
+# Neither service can read your data: the sync store holds ciphertext blobs and
+# the update server holds signed manifests.
+#
+#   docker compose up -d
+#   # then put TLS in front (caddy/traefik/nginx) before exposing these publicly
+version: "3.9"
+
+services:
+  sync:
+    build:
+      context: ..
+      dockerfile: cloud/Dockerfile
+    command: ["python", "cloud/sync_server/app.py", "--host", "0.0.0.0", "--port", "8790",
+              "--data", "/data/sync", "--updates", "/data/releases"]
+    environment:
+      BRAIN_SYNC_TOKEN: ${BRAIN_SYNC_TOKEN:?set BRAIN_SYNC_TOKEN in .env}
+    volumes:
+      - brain-data:/data
+    ports:
+      - "127.0.0.1:8790:8790"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8790/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  updates:
+    build:
+      context: ..
+      dockerfile: cloud/Dockerfile
+    command: ["python", "cloud/update_server/app.py", "--serve", "/data/releases",
+              "--host", "0.0.0.0", "--port", "8791"]
+    environment:
+      BRAIN_UPDATE_TOKEN: ${BRAIN_UPDATE_TOKEN:-}
+    volumes:
+      - brain-data:/data
+    ports:
+      - "127.0.0.1:8791:8791"
+    restart: unless-stopped
+
+volumes:
+  brain-data:

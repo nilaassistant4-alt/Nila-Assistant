@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ..security.permission import (
-    CAPABILITIES, CAP_EXPORT, CAP_FILE_LIST, CAP_FILE_READ, CAP_NET, CAP_PHOTO, CAP_SHELL,
+    CAPABILITIES, CAP_EXPORT, CAP_FILE_LIST, CAP_FILE_READ, CAP_FILE_WRITE, CAP_MIC,
+    CAP_NET, CAP_PHOTO, CAP_SHELL,
 )
 from ..util.misc import now_ms, sha256_hex
 
@@ -383,6 +384,89 @@ def build_default_registry() -> ToolRegistry:
         except Exception as exc:
             raise ToolError(f"cannot evaluate: {exc}") from exc
         return {"ok": True, "expression": expr, "result": value}
+
+    # -- everyday actions on this PC (stage 7) -------------------------- #
+    @reg.tool(
+        name="find_file",
+        description="Find a file by name on this PC (optionally by words inside text "
+                    "files). Returns paths; opens nothing.",
+        parameters={"type": "object", "properties": {
+            "query": {"type": "string"}, "root": {"type": "string"},
+            "content": {"type": "boolean"}, "limit": {"type": "integer"}},
+            "required": ["query"]},
+        risk="low", capability=CAP_FILE_LIST, tags=["file", "search", "offline"],
+    )
+    def find_file(ctx: ToolContext, query: str, root: str = "", content: bool = False,
+                  limit: int = 20) -> Dict[str, Any]:
+        from ..util import finder
+
+        base = root or str((ctx.config.agent or {}).get("search_root")
+                           or Path.home())
+        return finder.search(base, query, limit=int(limit or 20), content=bool(content))
+
+    @reg.tool(
+        name="open_app",
+        description="Open an app from the fixed list (chrome, notepad, calculator, "
+                    "explorer, word, excel ...). Only listed names work.",
+        parameters={"type": "object", "properties": {
+            "name": {"type": "string"}}, "required": ["name"]},
+        risk="medium", capability=CAP_SHELL, tags=["app", "offline"],
+    )
+    def open_app(ctx: ToolContext, name: str) -> Dict[str, Any]:
+        from ..util import apps
+        from ..util.apps import AppError
+
+        try:
+            return apps.open_app(name, config=ctx.config)
+        except AppError as exc:
+            return {"ok": False, "error": str(exc),
+                    "known": [a["name"] for a in apps.list_apps(ctx.config)]}
+
+    @reg.tool(
+        name="make_folder",
+        description="Create one folder inside a folder the owner names.",
+        parameters={"type": "object", "properties": {
+            "parent": {"type": "string"}, "name": {"type": "string"}},
+            "required": ["parent", "name"]},
+        risk="medium", capability=CAP_FILE_WRITE, tags=["file", "offline"],
+    )
+    def make_folder(ctx: ToolContext, parent: str, name: str) -> Dict[str, Any]:
+        from ..util import apps
+        from ..util.apps import AppError
+
+        try:
+            return apps.new_folder(parent, name)
+        except AppError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @reg.tool(
+        name="listen",
+        description="Listen to the microphone for a few seconds and turn the speech "
+                    "into text on this device. Only the enrolled voice is accepted.",
+        parameters={"type": "object", "properties": {
+            "seconds": {"type": "number"}, "file": {"type": "string"}}},
+        risk="high", capability=CAP_MIC, tags=["voice", "offline"],
+    )
+    def listen(ctx: ToolContext, seconds: float = 5.0, file: str = "") -> Dict[str, Any]:
+        from . import ears
+        from ..security.speaker import SpeakerLock
+
+        try:
+            heard = ears.hear(seconds=float(seconds or 5.0), source=file or None)
+        except (ears.EarsError, OSError) as exc:
+            return {"ok": False, "error": str(exc), "status": ears.available()}
+        # The same audio is offered to the voice lock before the words are used:
+        # if it is not the enrolled voice, the text is thrown away unused.
+        # The voiceprint lives in the vault's sealed meta; the memory store is
+        # the fallback for a context that has no vault (tests, tools run alone).
+        lock = SpeakerLock(ctx.config.home / "speaker.json",
+                           vault=ctx.vault, store=ctx.memory)
+        verdict = lock.judge(heard.get("samples") or [], heard.get("rate") or 16000)
+        if not verdict.ok:
+            return {"ok": False, "error": verdict.reason, "verdict": verdict.verdict,
+                    "score": round(verdict.score, 3), "words_discarded": True}
+        return {"ok": True, "text": heard.get("text", ""), "seconds": heard.get("seconds"),
+                "engine": heard.get("engine", ""), "verdict": verdict.verdict}
 
     # -- files the owner hands over (stage 6) --------------------------- #
     @reg.tool(

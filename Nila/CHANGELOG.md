@@ -1,0 +1,286 @@
+# Changelog
+
+## Unreleased — #4 session rule, and the docs the build disagreed with (2026-11-04)
+
+### Added
+- **30-minute warning / 60-minute idle lock** (the owner's session rule).
+  `Config.warn_after` (30 min, configurable, always before the lock),
+  `Session.last_activity` and `Vault.idle_seconds()`. The dashboard shows a
+  banner with an "I am still here" button (`POST /v1/session/touch`); the REPL
+  prints the same warning once; `brain session [--touch]` reports the rule.
+- **A checkpoint before the idle lock.** When the idle deadline passes, open
+  project state is flushed and the reason is audited (`session_idle_lock`)
+  before the key is dropped.
+- **`brain session`** and, on the API, `POST /v1/session/touch`.
+
+### Fixed
+- **A standing instruction never reached an offline answer.** With no model
+  running (the normal first run) the intent engine answered from its own
+  patterns, so "call me Anna" was stored, audited, shown in the panel - and
+  ignored. The rule now reaches the offline engine too, and an online turn still
+  gets none.
+- **The 30/60 checkpoint never ran.** `Vault.session` locks and returns `None`
+  as soon as the deadline passes, so the check saw "no session" and skipped the
+  checkpoint; the guard also sat *after* the 423. It now runs on every
+  authenticated request, reads the raw session, and is journalled with its
+  checkpoint (`test_the_deadline_that_has_just_passed_still_gets_a_checkpoint`).
+- **A locked session could only be recovered by restarting Nila.** The dashboard
+  now has an `Unlock again` form, `POST /v1/auth/verify` refuses to swap a live
+  session (409, so the tab's token survives), and `/v1/status` keeps the same
+  `session` shape when locked instead of dropping the rule the screen needs.
+- **The connector screen said "unlock with your authenticator" to someone who
+  has none.** The refusal now says `brain totp` first, and the panel shows the
+  whole `how` list instead of only the error line.
+- **A ctrl-c'd session made the next start ask for the passphrase.** A `Stop
+  Nila` button calls `/v1/lock` for a clean exit.
+- **An auto-refresh counted as the owner being present.** The 2 s dashboard poll
+  refreshed the idle deadline, so a laptop left open never locked. Only a
+  message, an explicit click or a CLI action moves the window now.
+- **The idle default was 2 hours**, set by an earlier build; 30/60 is the
+  confirmed rule, so `CONFIG_VERSION` is 3 and the two retired *built-in*
+  defaults (900 s / 7200 s) migrate to 60 minutes. A hand-set value is kept.
+- **`docs/CAPABILITIES.md` documented an `agent.auto_online` switch that no
+  code ever read.** Removed and replaced with the truth: Online is per message.
+- **`.env.example` said to copy it to `.env`.** Nothing loads a `.env` file;
+  the file now says so at the top, and names `BRAIN_HOME`'s real default.
+- **The capability map called outside services BLOCKED even when one was on.**
+  It now reads the connectors screen.
+- **Stale counts**: `docs/ARCHITECTURE.md` said 20 tools / 25 subcommands
+  (28 / 32 today) and `docs/THREAT_MODEL.md` still described a 2 h idle.
+- **The "no online key" message named only an environment variable**; it now
+  says the vault was checked too, and how to add a key.
+
+## Unreleased — #3 connectors screen (2026-11-04)
+
+One screen that answers "which AI services and outside services may Nila use,
+and may they be used right now?", implemented against the owner's brief. The
+acceptance tests are in `tests/test_connectors.py` (28).
+
+### Added
+- **`brain/agent/connectors.py`** — the single source of truth: the catalogue
+  (built-in engine, Ollama, Gemini, an OpenAI-compatible endpoint, Anthropic),
+  ON/OFF state, sealed key storage, today's usage, the fixed-prompt test call,
+  and the fresh-login approval.
+- **`/v1/connectors`** (GET) — the whole screen. Never returns a secret: only
+  `has_key`, the last four characters and a non-reversible fingerprint.
+- **`/v1/connectors/authorise`**, `/switch`, `/key` (POST/DELETE), `/test` —
+  every write spends a **single-use approval** bound to this session and to one
+  action.
+- **`brain connectors list|on|off|key|remove-key|test|approve`**. A key is read
+  from a hidden prompt (or `--key-env`) and never accepted as an argument:
+  `argv` is visible in `ps` and shell history.
+- **Dashboard "Connectors" panel** — state pill, toggle, Test, hosts, key
+  existence and today's usage, plus an Approve form for the login check.
+- **`IdentityCeremony.authorise_action` / `consume_action`** — re-authenticate
+  once, spend once, audit both; grants are stored in `approvals.json` (no
+  secrets; 120 s TTL), keyed by session id.
+- **Sealed key storage** (`ConnectorVault`) — connector secrets live inside the
+  encrypted identity blob, each sealed under a key derived from the master key.
+  A locked or degraded session cannot release one.
+- **Explicit OFF is honoured** by the router. An owner who never opened the
+  screen keeps exactly the behaviour they had.
+- **No payment, bank or card connectors.** The brief's "ChatGPT / Claude /
+  Gemini" are AI services; the test asserts no such row exists.
+
+### Fixed on the way
+- `counter_for()` refused every step **after** the stored ceiling (`<=`), so
+  approving an action inside the same 30-second window as the unlock failed -
+  found by driving the real CLI. Equality is the correct rule; `verify()` keeps
+  its own floor.
+- The **CLI** accepted one authenticator code for unlimited commands: it used
+  `verify()` without spending the step. It now marks the counter used, like the
+  API ceremony always did (audit B6's fix never reached the main human route).
+- A wrong passphrase or a stale code was refused with no trace in the journal;
+  every approval attempt, success or failure, is now audited.
+
+### Fixed after the first build
+- **A key entered in the screen never reached the router.** The screen read the
+  vault; the router built its provider from the environment only. An owner could
+  add a Gemini key, see "key ending 7890", and still be told "no online key set".
+  `ConnectorRegistry.key_material()` is now the single answer, `build_provider()`
+  accepts a key from the config, and the router asks for it once per turn. A
+  switched-off connector lends no key at all.
+- The "no online key" message now says where to put one
+  (`brain connectors key gemini`) instead of pointing only at an env variable.
+
+### Behaviour to know
+- One approval authorises exactly one action. ON and OFF are different actions,
+  and the CLI's "this process just logged in" shortcut covers a single action,
+  then asks for the password again.
+- The **Test** button sends one fixed prompt (~120 characters, no personal
+  data), counts it against the daily budget, and records a failure as usage too.
+
+## Unreleased — #2 standing instruction memory (2026-11-04)
+
+A new memory kind, `instruction`, for rules the owner states once and expects
+applied every time ("call me Anna"). Implemented against the owner's brief; the
+29 acceptance tests are in `tests/test_instruction_memory.py`.
+
+### Added
+- **`instruction` kind** (`brain/security/classify.py`, `brain/memory/store.py`).
+  Applied to EVERY local turn, injected before the model sees the question -
+  retrieval is relevance-ranked, so a rule used to appear only when the question
+  happened to share words with it. Verified: "call me Anna" now reaches
+  "what is the weather".
+- **Owner-only creation.** `remember()` refuses `kind="instruction"` unless the
+  caller passes `owner_instruction=True`, which only `brain instruct`, the
+  dashboard panel and the `/v1/instructions` route do. The model's `remember`
+  tool, a file, a web page and a tool result are all refused, and the refusal is
+  returned as `{"ok": false}` rather than raised (an exception there killed the
+  turn).
+- **Safety filter** (`instruction_safety()`). A standing rule is applied to
+  every turn, so it may not touch the permission machinery, the audit trail, the
+  vault's factors or network egress. Matched on folded text (case, whitespace,
+  leetspeak) so `n3ver ask for perm1ssion` is refused too. Length cap 280 chars,
+  count cap 20.
+- **Online isolation.** An Online turn receives NO instructions, and a degraded
+  session only receives the classes its tier may read.
+- **`brain instruct add|list|edit|remove`.**
+- **`/v1/instructions`** (GET/POST/PATCH/DELETE) and a dashboard panel with
+  Add / Edit / Remove.
+- **Every change audited** (`instruction_added|edited|removed|refused`), and the
+  chain still verifies.
+
+### Fixed on the way
+- The gateway had no `do_PATCH`/`do_PUT`, so `BaseHTTPRequestHandler` answered
+  **501** for any PATCH before the handler was reached.
+- The `remember` tool raised `InstructionError` out of the registry, killing the
+  turn; it now returns a refusal dict.
+- `"ignore your safety rules"` slipped past `"ignore your rules"`; the noun in
+  the middle defeated the needle. Pattern set widened and covered by tests.
+
+### Tests
+- 696 passed, 3 skipped (pytest); 653 passed, 0 failed (stdlib fallback).
+
+## Unreleased — audit remediation (2026-11-04)
+
+Findings from an evidence-based audit (`NILA_AUDIT_REPORT_2026-11-04.md`) where every
+item below was reproduced against the shipped code with a synthetic fixture before it
+was fixed, and has a regression test in `tests/test_audit_*.py`.
+
+### Security
+- **Redirect credential leak (F4).** A 302 from an allow-listed integration, an
+  OpenAI-compatible provider or the sync blob store carried `Authorization` /
+  `x-api-key` to the new host. New `brain/util/http.py` refuses redirects on any
+  credentialed request and re-checks policy on credential-free ones.
+- **Path containment (F1a/F2).** `extract_to` in an update manifest could write
+  outside the install root (`../../..`); the update server, sync server and installer
+  used a string-prefix test that a sibling directory defeats. New
+  `brain/util/safe_paths.py` is now the only containment check in the project.
+- **Update authenticity (F1c).** An unsigned manifest was accepted in `tofu` mode and
+  pinned nothing, so every later manifest was equally unauthenticated. Unsigned is now
+  refused outside explicit `insecure` mode. An HMAC channel that pinned only a
+  `key_id` (no shared secret) no longer verifies an empty key.
+- **Install-time code execution (F1b).** The pre-swap import test ran package code for
+  any feed. It now runs only when the signature was verified against a pinned key;
+  otherwise it is skipped and reported.
+- **Update publish server (F3).** Refuses to start without a token (`--open` serves
+  read-only and disables publishing), requires a token on POST, and confines
+  `release_dir` to `--publish-from`.
+- **Never-read list (F5).** `.env`, `.env.*`, `api_keys.json`, `secrets.{json,yml}`,
+  `credentials.{json,yml}`, `service-account.json`, `terraform.tfstate`, `.pgpass`,
+  `*.pem`, `*.key`, `*.der`, `*.pkcs12` are now refused; templates (`.env.example`,
+  `credentials.example.json`) stay readable.
+- **Usage ledger (F6).** The per-minute window is persisted (a restart refunded the
+  minute's budget) and a corrupt ledger fails **closed** instead of reading as zero usage.
+- **Undeclared capability (F8).** `run_sync` and `check_updates` now declare `net.host`.
+
+### Fixed
+- **Step-up was unreachable (F7).** Nothing ever set `Session.step_up_ok`, so
+  `export_backup` refused in every normal flow. `Ceremony.step_up()` and
+  `brain unlock --step-up` now grant it, and the flag is consumed by one high-risk
+  call rather than standing.
+- **Wheel packaging (F9).** `packages = ["brain"]` shipped 4 modules; `nila`/`brain`
+  scripts failed with `No module named 'brain.cli'`. Now `find` over `brain.*`
+  (52 modules) and both entry points run from a clean install.
+- **ZIP contamination (F10).** `build/` and `*.egg-info/` from a prior wheel build
+  rode into the distributable. Excluded and asserted against.
+- **False test failures (F11).** `scripts/run_tests.py` reported two hard failures
+  instead of skips when no ZIP existed; it now honours `pytest.skip`.
+
+### Security (v0.2 backlog batch — NILA_V02_PLAN_DRAFT_TA.md §1)
+Every item below was reproduced first, then fixed, then re-probed; each has a
+regression test in `tests/test_backlog_remediation.py`.
+
+- **A2 — a degraded session opened a full store.** An API re-login that skipped the
+  strong factor still built `MemoryStore(access_level="full")` with the same master
+  key, so restricted rows were returned regardless of the tier the rest of the app
+  believed it enforced. `MemoryStore` now takes the session and derives the level from
+  it: a degraded session can never open `full`, and an expired session is refused.
+- **A3 — the audit verifier verified nothing.** `verify_audit_chain()` only checked that
+  each line *had* a `chain` field; it never recomputed one, so an edited payload, a
+  deleted entry and a reordered journal all returned `ok=True`. The chain now commits to
+  the entire entry (`_audit_body`) and the verifier recomputes every line, reporting
+  `mismatched` and `problems`. Journals written before the fix are accepted via the old
+  formula but counted as `legacy_unprotected`, never as tampering.
+- **B6 — TOTP replay.** A used code authenticated twice. The counter is recorded on the
+  vault and a code at or below it is refused.
+- **B7 — malformed `Content-Length`.** `-1`/`abc` now answer `400` and an over-large
+  value answers `413` immediately, instead of pinning the handler thread.
+- **B8 — ledger corruption bypassed the cap.** `{"days": []}` parses as a dict, so the
+  old `_corrupt()` accepted it and the counter read as zero; a wrong-typed count raised
+  `ValueError` out of `usage()`. `_corrupt()` is now structural and fails **closed**.
+- **B9 — the 200-record page.** A project list stopped at 200 and older projects became
+  unreachable while `truncated` stayed silent. `SCAN_LIMIT` is 2000 and `listing()`
+  reports truncation explicitly.
+- **B10 — one approval, unlimited calls.** `IntegrationGateway` and the tool gate called
+  `Broker.peek()`, which answers "would this be allowed?" and spends nothing, so an
+  affirmed one-shot `net.host` grant authorised every later call. New
+  `Broker.consume()` burns the approval atomically; a tool handler that owns its own
+  `request()` keeps working because the gate spends any approval left over
+  (`spend_unused`) in a `finally` block.
+- **B11 — TOFU pinned a key that authenticated nothing.** On a symmetric (hmac-sha256)
+  channel the first manifest supplied its own `key_id`, which was then "verified"
+  against itself; a forged manifest was accepted forever. Trust-on-first-use now refuses
+  to pin a symmetric key and tells you to supply it out of band.
+- **B12 — sync lied.** `run_sync` imported `brain.cloud.sync`, a module that does not
+  exist, so the tool raised `ModuleNotFoundError` on every call; `sync_status` had the
+  same wrong import. An empty `sync.backend` crashed `build_store`; `status()` claimed a
+  remote backend when only `sync.url` was set. Sync now reports `backend`/`remote`/
+  `target`/`warnings`, `ok` follows the report's errors, and the CLI exits **1**.
+- **A4 — WAL records were lost by a live backup.** `memory.db` was copied with a 4 KiB
+  WAL pending, so a backup taken while the app ran restored **0** records. The export now
+  uses SQLite's online `conn.backup()` into a temporary snapshot.
+- **A5 — attachments were left out.** Sealed project files (`*.pbx`) were not in the
+  archive, so a restored project's files were `file not found`. Format 2 bundles them
+  with a `attachments_sha256` integrity claim; `brain restore` verifies both hashes and
+  restores the blobs.
+- **Credential rotation (backlog "கூடுதல்" items).** `brain recovery` shows the remaining
+  break-glass codes and reissues a set (every old code dies); `brain change-passphrase`
+  exposes `rotate_passphrase`, which had no caller at all; a non-interactive `brain totp`
+  no longer silently replaces an enrolled factor (`--replace` is required).
+
+### Tests
+- 664 passed, 3 skipped (the skips require a built distributable ZIP or a crypto extra).
+- `scripts/run_tests.py` (no pytest installed): 621 passed, 0 failed, 46 skipped.
+
+## 0.1.0 (first Windows build of the new core)
+
+### Security (Phase 0)
+- Passphrase alone no longer opens the vault. An authenticator code is required; a vault with no
+  second factor refuses everything except `brain totp` / `brain enroll-voice`.
+- `brain totp` confirms your 6-digit code before saving the secret (a typo cannot lock you out).
+- Recovery codes work as a one-time break-glass login (`--recovery`).
+- Access token compared in constant time and no longer printed (browser receives it privately).
+- Standing grants last 24 hours (was 7 days); network access can no longer be a standing grant.
+- `run_command`: rejects chaining/redirection, runs in a private workspace folder, secret-looking
+  environment variables removed.
+- Taint rule: after untrusted content (file, photo, network, command output) enters a reply,
+  high-risk tools are held for the rest of that reply.
+- Provider addresses validated: the Gemini key is only sent to Google (or loopback); local AI must
+  be on this PC.
+
+### Features (Phase 1)
+- Chat panel in the dashboard with a label showing where each answer ran.
+- Router with three lanes (this PC / online / built-in engine); online only on request, only
+  for non-private messages, only within budget.
+- Usage ledger with daily cap, per-minute cap, stop-at-percent, 429 cool-down, failures counted.
+- Gemini provider. 
+- Projects: ideas, 9-block business model, milestones, notes, status, next steps, resume,
+  encrypted file attachments. Works offline.
+- Capability map (possible / asks first / needs setup / blocked / planned) and health report.
+- Windows scripts: `setup.bat`, `start-nila.bat`, `report.bat`, `nila-cmd.bat`.
+
+### Tests
+- 42 new tests (`tests/test_v01.py`). Existing suite kept green; one test updated because network
+  access is intentionally no longer a standing grant.

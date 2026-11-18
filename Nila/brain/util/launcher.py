@@ -45,6 +45,17 @@ COMMANDS = {
     "நிலா தொடங்கு": "start",
     "நிலா நிறுத்து": "stop",
 }
+#: What may follow "nila" once Nila is already listening (stage 7). Deliberately
+#: small and verb-first: a spoken sentence is matched against these *words*, and
+#: anything that does not match is answered, never guessed at.
+SPOKEN = {
+    "open": ("open", "திற", "திறக்க"),
+    "find": ("find", "search", "where is", "தேடு"),
+    "read": ("read", "படி"),
+    "calendar": ("calendar", "appointment", "நாள்காட்டி"),
+    "remind": ("remind", "நினைவூட்டு"),
+    "stop": ("stop", "wait", "நிறுத்து"),
+}
 
 
 class LauncherError(RuntimeError):
@@ -100,9 +111,10 @@ def plan(home: Optional[Path] = None) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # what to write
 # --------------------------------------------------------------------------- #
-def windows_vbs(python: str, script: str, home: str = "") -> str:
+def windows_vbs(python: str, script: str, home: str = "",
+                extra_args: Optional[List[str]] = None) -> str:
     """A launcher with no console window, and no shell quoting to get wrong."""
-    args = [python, script, "start"]
+    args = [python, script, *(["start"] if not extra_args else extra_args)]
     if home:
         args += ["--home", home]
     joined = " ".join(f'""{a}""' for a in args)
@@ -122,24 +134,89 @@ def windows_shortcut_help(target_vbs: Path) -> str:
     )
 
 
-def linux_desktop(python: str, script: str, home: str = "") -> str:
-    args = [python, script, "start"]
+def linux_desktop(python: str, script: str, home: str = "",
+                  extra_args: Optional[List[str]] = None,
+                  name: str = "Nila",
+                  comment: str = "Start Nila (unlock, then open the app)") -> str:
+    args = [python, script, *(["start"] if not extra_args else extra_args)]
     if home:
         args += ["--home", home]
+    quoted = " ".join(f'"{a}"' if " " in str(a) else str(a) for a in args)
     return ("[Desktop Entry]\n"
             "Type=Application\n"
-            "Name=Nila\n"
-            "Comment=Start Nila (unlock, then open the app)\n"
-            f"Exec={' '.join(args)}\n"
+            f"Name={name}\n"
+            f"Comment={comment}\n"
+            f"Exec={quoted}\n"
             "Terminal=true\n"
             "Categories=Utility;\n")
 
 
-def macos_command(python: str, script: str, home: str = "") -> str:
-    args = [python, script, "start"]
+def macos_command(python: str, script: str, home: str = "",
+                  extra_args: Optional[List[str]] = None) -> str:
+    args = [python, script, *(["start"] if not extra_args else extra_args)]
     if home:
         args += ["--home", home]
     return " && ".join([f'"{a}"' for a in args])
+
+
+def push_to_talk_launchers(home: Path, out_dir: Optional[Path] = None,
+                            max_seconds: float = 8.0) -> Dict[str, Any]:
+    """An icon (and, on Windows, the auto-start entry) for one spoken command.
+
+    The owner's rule is no terminal typing, so hearing him has to be an icon too.
+    What the icon runs is a *bounded* listen: one press, `max_seconds` of audio,
+    then it closes. That is the difference between a push-to-talk and an
+    always-on microphone, and only the first one is offered.
+    """
+    system = platform.system().lower()
+    py = sys.executable or "python"
+    script = str(Path(home) / "brain.py")
+    if not Path(script).exists():
+        script = "-m brain"
+    target = Path(out_dir) if out_dir else (Path.home() / "Desktop")
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise LauncherError(f"could not write to {target}: {exc}") from exc
+    args = [py, script] if script != "-m brain" else [py, "-m", "brain"]
+    args += ["talk", "--seconds", str(float(max_seconds))]
+    written: Dict[str, str] = {}
+    if system.startswith("win"):
+        vbs = target / "Nila Talk.vbs"
+        vbs.write_text(windows_vbs(py, script, str(home),
+                                   extra_args=["talk", "--seconds", str(float(max_seconds))]),
+                       encoding="utf-8")
+        written["talk"] = str(vbs)
+        startup = Path(os.environ.get("APPDATA", Path.home())) / "Microsoft" / \
+            "Windows" / "Start Menu" / "Programs" / "Startup" / "Nila Talk.vbs"
+        try:
+            startup.parent.mkdir(parents=True, exist_ok=True)
+            startup.write_text(vbs.read_text(encoding="utf-8"), encoding="utf-8")
+            written["startup"] = str(startup)
+        except OSError:
+            pass                                   # the icon still works
+        note = ("Press the icon, say 'Nila open notepad', and it acts. On Windows "
+                "the same file is in your Startup folder, so the Win key then "
+                "typing 'Nila' reaches it; add a Shortcut key in Properties for a "
+                "true hotkey (that part is Windows' own, I cannot set it).")
+    elif system == "darwin":
+        sh = target / "Nila Talk.command"
+        sh.write_text("#!/bin/sh\n" + macos_command(
+            py, script, str(home),
+            extra_args=["talk", "--seconds", str(float(max_seconds))]) + "\n")
+        os.chmod(sh, 0o755)
+        written["talk"] = str(sh)
+        note = "Double-click Nila Talk.command. Drag it to the Dock for one click."
+    else:
+        desktop = target / "nila-talk.desktop"
+        desktop.write_text(linux_desktop(
+            py, script, str(home), extra_args=["talk", "--seconds", str(float(max_seconds))],
+            name="Nila Talk", comment="Press once, say it, Nila does it"))
+        os.chmod(desktop, 0o755)
+        written["talk"] = str(desktop)
+        note = "Double-click nila-talk.desktop, or put it in the application menu."
+    return {"ok": True, "written": written, "runs": " ".join(args), "note": note,
+            "bounded": True, "seconds": float(max_seconds)}
 
 
 def write_launchers(home: Path, out_dir: Optional[Path] = None) -> Dict[str, Any]:
@@ -215,3 +292,41 @@ def spoken_trigger(text: str, speaker_ok: bool, has_voiceprint: bool) -> Dict[st
                        ("no voiceprint is enrolled, so I cannot tell whether this "
                         "was your voice - run `brain voice enrol`"),
             "reason": "recognised"}
+
+
+def spoken_action(text: str) -> Dict[str, Any]:
+    """Split one spoken sentence into an action and its argument.
+
+    ``"nila open notepad"`` -> ``{"action": "open", "argument": "notepad"}``.
+    A bare ``"nila start"`` stays the launcher phrase. Everything unmatched comes
+    back as ``{"action": "", ...}`` so the caller can say "I did not catch that"
+    instead of inventing an intent.
+    """
+    # A file name is not a sentence: "D:/bill.pdf" must keep its dot and slash,
+    # so only commas become spaces here (end-of-sentence dots are stripped below
+    # from the tail of an argument, never from the middle of a path).
+    low = " ".join(str(text or "").lower().replace(",", " ").split())
+    if not low:
+        return {"action": "", "argument": "", "text": "", "reason": "nothing was said"}
+    action = match_command(low)
+    if action:
+        return {"action": action, "argument": "", "text": low, "reason": ""}
+    for word in ("nila", "நிலா"):
+        if low == word:
+            return {"action": "", "argument": "", "text": low,
+                    "reason": "you said my name but not what to do"}
+        if low.startswith(word + " "):
+            low = low[len(word):].strip()
+            break
+    else:
+        return {"action": "", "argument": low, "text": low,
+                "reason": "the sentence did not start with my name"}
+    for name, triggers in sorted(SPOKEN.items(), key=lambda kv: -max(len(t) for t in kv[1])):
+        for trigger in sorted(triggers, key=len, reverse=True):
+            if low == trigger:
+                return {"action": name, "argument": "", "text": low, "reason": ""}
+            if low.startswith(trigger + " "):
+                argument = low[len(trigger):].strip().rstrip("?.!")
+                return {"action": name, "argument": argument, "text": low, "reason": ""}
+    return {"action": "", "argument": low, "text": low,
+            "reason": f"I do not know how to '{low.split()[0]}' yet"}

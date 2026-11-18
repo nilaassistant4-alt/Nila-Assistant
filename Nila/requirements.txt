@@ -1,0 +1,4 @@
+# Optional. The MVP runs on the Python standard library alone.
+# Install these only if you want real voice features from WAV recordings.
+numpy>=1.24
+soundfile>=0.12

@@ -1,0 +1,18 @@
+# All optional. Install selectively - each one is a supply-chain exposure you
+# should choose deliberately, not inherit. See docs/THREAT_MODEL.md section 2.
+
+# Neural semantic search (replaces the deterministic hash embedder)
+sentence-transformers>=2.2
+
+# Localhost JSON API server (a stdlib gateway is used otherwise)
+fastapi>=0.110
+uvicorn>=0.27
+
+# Argon2id key derivation (falls back to scrypt n=2^15 without it)
+argon2-cffi>=23.1
+
+# Sync/update client (stdlib urllib is used otherwise)
+httpx>=0.27
+
+# Development
+pytest>=7.4

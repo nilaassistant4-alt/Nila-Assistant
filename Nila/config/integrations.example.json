@@ -1,0 +1,85 @@
+{
+  "_comment": [
+    "Example integration registry. Copy to $BRAIN_HOME/integrations.json and edit.",
+    "RULES ENFORCED BY THE GATEWAY:",
+    "  * the model may only call name+operation pairs declared here (it cannot invent URLs)",
+    "  * secrets must be references: {\"$env\": \"VAR_NAME\"} or {\"$vault\": \"secret-key-name\"}",
+    "    literal secrets are rejected at load/call time",
+    "  * allow_hosts is enforced; plain http is loopback-only",
+    "  * every call is rate limited and written to the hash-chained audit journal",
+    "  * path/query/body templates may only reference declared {{param.NAME}} placeholders"
+  ],
+  "integrations": [
+    {
+      "name": "local_echo",
+      "description": "Zero-config loopback demo integration (no secret, no network egress).",
+      "base_url": "http://127.0.0.1:8787",
+      "allow_hosts": ["127.0.0.1", "localhost"],
+      "enabled": false,
+      "timeout": 5,
+      "rate_limit_per_minute": 30,
+      "auth": {"type": "none"},
+      "operations": [
+        {"name": "ping", "method": "GET", "path": "/health", "description": "health check"}
+      ]
+    },
+    {
+      "name": "calendar",
+      "description": "Google Calendar via a self-hosted bridge you control.",
+      "base_url": "https://bridge.example.internal",
+      "allow_hosts": ["bridge.example.internal"],
+      "timeout": 15,
+      "rate_limit_per_minute": 30,
+      "enabled": false,
+      "auth": {"type": "bearer", "$env": "CALENDAR_BRIDGE_TOKEN"},
+      "headers": {"X-Client": "personal-brain"},
+      "operations": [
+        {"name": "list_events", "method": "GET", "path": "/v1/calendars/{{param.calendar}}/events",
+         "params": {"query": {"timeMin": "{{param.time_min}}", "maxResults": "{{param.max}}"}}},
+        {"name": "create_event", "method": "POST", "path": "/v1/calendars/{{param.calendar}}/events",
+         "required": ["summary", "start"],
+         "params": {"json": {"summary": "$param.summary", "start": {"dateTime": "$param.start"},
+                              "end": {"dateTime": "$param.end"}, "description": "$param.notes"}}}
+      ]
+    },
+    {
+      "name": "notion",
+      "description": "Notion API (official). Token via env var - never in this file.",
+      "base_url": "https://api.notion.com",
+      "allow_hosts": ["api.notion.com"],
+      "timeout": 20,
+      "rate_limit_per_minute": 45,
+      "enabled": false,
+      "auth": {"type": "bearer", "$env": "NOTION_TOKEN"},
+      "headers": {"Notion-Version": "2022-06-28"},
+      "operations": [
+        {"name": "search", "method": "POST", "path": "/v1/search",
+         "required": ["query"],
+         "params": {"json": {"query": "$param.query", "page_size": 10}}},
+        {"name": "append_block", "method": "PATCH", "path": "/v1/blocks/{{param.block_id}}/children",
+         "required": ["block_id", "text"],
+         "params": {"json": {"children": [{"object": "block", "type": "paragraph",
+                                            "paragraph": {"rich_text": [{"type": "text",
+                                             "text": {"content": "$param.text"}}]}}]}}}
+      ]
+    },
+    {
+      "name": "github",
+      "description": "GitHub REST. Uses a fine-grained PAT with the least scope you need.",
+      "base_url": "https://api.github.com",
+      "allow_hosts": ["api.github.com"],
+      "timeout": 20,
+      "rate_limit_per_minute": 40,
+      "enabled": false,
+      "auth": {"type": "bearer", "$env": "GITHUB_TOKEN"},
+      "headers": {"X-GitHub-Api-Version": "2022-11-28"},
+      "operations": [
+        {"name": "my_issues", "method": "GET", "path": "/issues",
+         "params": {"query": {"state": "{{param.state}}", "per_page": "{{param.max}}"}}},
+        {"name": "create_issue", "method": "POST", "path": "/repos/{{param.repo}}/issues",
+         "required": ["repo", "title"],
+         "params": {"json": {"title": "$param.title", "body": "$param.body"}}}
+      ]
+    }
+  ]
+}

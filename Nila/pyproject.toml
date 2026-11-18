@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "personal-brain"
+version = "0.1.0"
+description = "Nila - a local-first personal AI brain with an encrypted memory vault"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "Nila project" }]
+keywords = ["agent", "memory", "encryption", "local-first", "privacy"]
+
+# Deliberately empty: the MVP has ZERO mandatory third-party dependencies.
+# Everything below is opt-in, because a forced dependency is a supply-chain
+# exposure the user did not choose. See THREAT_MODEL.md section 2.
+dependencies = []
+
+[project.optional-dependencies]
+voice = ["numpy>=1.24", "soundfile>=0.12"]
+semantic = ["sentence-transformers>=2.2"]
+api = ["fastapi>=0.110", "uvicorn>=0.27"]
+kdf = ["argon2-cffi>=23.1"]
+cloud = ["httpx>=0.27"]
+all = [
+  "numpy>=1.24", "soundfile>=0.12", "sentence-transformers>=2.2",
+  "fastapi>=0.110", "uvicorn>=0.27", "argon2-cffi>=23.1", "httpx>=0.27",
+]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+nila = "brain.cli.main:main"
+brain = "brain.cli.main:main"
+
+[tool.setuptools]
+# `packages = ["brain"]` shipped ONLY the top level: no brain.cli, no
+# brain.memory, no brain.updates. The wheel built, installed, and then failed on
+# import with `No module named 'brain.cli'`, so the `nila`/`brain` console
+# scripts could never run from an installation. `find` picks up every
+# subpackage (they all have __init__.py) and stays correct as new ones appear.
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["brain", "brain.*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+brain = ["identity/voice_model.json", "**/*.json", "api/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

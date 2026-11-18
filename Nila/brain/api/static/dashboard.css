@@ -1,0 +1,54 @@
+:root{--bg:#0b1020;--pn:#121a30;--ln:#243050;--tx:#d8e2ff;--mu:#7f8db5;--ac:#5ad1ff;--bad:#ff6b81;--ok:#5be3a1;--warn:#ffc65a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:13px system-ui,sans-serif;height:100vh;display:grid;grid-template-columns:300px 1fr 340px;gap:8px;padding:8px}
+section{background:var(--pn);border:1px solid var(--ln);border-radius:10px;padding:10px;overflow:auto;min-height:0}
+h2{margin:14px 0 8px;font-size:12px;letter-spacing:.08em;color:var(--mu);text-transform:uppercase}h2:first-child{margin-top:0}
+#files div{padding:3px 4px;cursor:pointer;border-radius:4px}#files div:hover{background:var(--ln)}
+#path{color:var(--mu);word-break:break-all;margin-bottom:6px}
+#core{padding:0;position:relative;display:flex;overflow:hidden}canvas{position:absolute;inset:0;width:100%;height:100%;opacity:.5}
+#chat{position:relative;display:flex;flex-direction:column;width:100%;height:100%;padding:10px;gap:8px}
+#tag{color:var(--mu);letter-spacing:.12em}
+#msgs{flex:1;overflow:auto;display:flex;flex-direction:column;gap:8px}
+.bub{max-width:88%;padding:8px 10px;border-radius:10px;white-space:pre-wrap;word-break:break-word;background:rgba(18,26,48,.92);border:1px solid var(--ln)}
+.bub.me{align-self:flex-end;background:#1b2b52}
+.badge{display:inline-block;margin-top:6px;padding:1px 7px;border-radius:9px;font-size:11px;border:1px solid var(--ln);color:var(--mu)}
+.badge.local{color:var(--ok);border-color:var(--ok)}.badge.online{color:var(--warn);border-color:var(--warn)}.badge.blocked{color:var(--bad);border-color:var(--bad)}
+.notice{margin-top:4px;color:var(--mu);font-size:12px}
+#modebar{display:flex;gap:14px;color:var(--mu)}#modebar label{cursor:pointer}
+.row{display:flex;gap:6px;align-items:flex-end}
+textarea,input[type=text],input:not([type]),select{flex:1;background:#0b1226;color:var(--tx);border:1px solid var(--ln);border-radius:6px;padding:6px;font:inherit;min-width:0}
+textarea{resize:none}
+button{background:var(--ln);color:var(--tx);border:0;border-radius:5px;padding:5px 10px;cursor:pointer}
+button:hover{background:#2f4070}button:disabled{opacity:.5;cursor:default}
+.m{margin:5px 0}progress{width:100%;height:6px;accent-color:var(--ac)}
+#log{font:11px ui-monospace,monospace;color:var(--mu);max-height:24vh;overflow:auto}
+.bad{color:var(--bad)}.okc{color:var(--ok)}.warnc{color:var(--warn)}.mu{color:var(--mu)}
+.note{color:var(--mu);margin-bottom:8px;white-space:pre-wrap}
+.proj{padding:6px;border:1px solid var(--ln);border-radius:6px;margin:4px 0;cursor:pointer}.proj:hover,.proj.on{background:var(--ln)}
+.proj small{color:var(--mu);display:block}
+#pdetail{margin-top:8px}#pdetail .box{border:1px solid var(--ln);border-radius:8px;padding:8px}
+#pdetail ul{margin:4px 0 8px 16px;padding:0}#pdetail pre,#repbox{white-space:pre-wrap;color:var(--tx);font:12px ui-monospace,monospace;margin:4px 0}
+.cap{display:flex;justify-content:space-between;gap:8px;margin:3px 0}.cap span:last-child{color:var(--mu);white-space:nowrap}
+.st-possible{color:var(--ok)}.st-needs_permission,.st-needs_setup{color:var(--warn)}.st-blocked{color:var(--bad)}.st-planned{color:var(--mu)}
+@media(max-width:1000px){body{grid-template-columns:1fr;height:auto}#core{min-height:70vh}}
+
+/* standing instructions (#2): a compact list with per-row actions */
+.instrrow { display: flex; align-items: flex-start; gap: 6px; padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,.08); }
+.instrtext { flex: 1; font-size: 12px; line-height: 1.35; word-break: break-word; }
+button.mini { font-size: 11px; padding: 2px 6px; opacity: .85; }
+button.mini:hover { opacity: 1; }
+
+/* connectors (#3): a state pill per row, and no colour on the secret itself */
+.cxrow{border-bottom:1px solid rgba(255,255,255,.08);padding:5px 0}
+.cxhead{display:flex;align-items:center;gap:6px}
+.cxname{flex:1;font-size:12px;line-height:1.3}
+.cxstate{font-size:10px;letter-spacing:.06em;padding:1px 6px;border-radius:8px;border:1px solid var(--ln);color:var(--mu)}
+.cxstate.on{color:var(--ok);border-color:var(--ok)}
+.cxstate.off{color:var(--mu)}
+.cxstate.err{color:var(--bad);border-color:var(--bad)}
+.cxmeta{font-size:11px;color:var(--mu);margin-top:2px;word-break:break-word}
+
+/* idle warning (#2 session rule): a banner, not a modal - it must not steal focus */
+.banner{display:flex;gap:8px;align-items:center;justify-content:space-between;background:#2b2317;
+  border:1px solid var(--warn);color:var(--warn);border-radius:8px;padding:6px 8px;margin:0 0 8px;font-size:12px}
+.banner button{background:var(--warn);color:#1a1a1a;font-weight:600}
