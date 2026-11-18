@@ -101,10 +101,18 @@ def plan(home: Optional[Path] = None) -> Dict[str, Any]:
              "works": False,
              "how": "not offered: a microphone open all day is a battery and "
                     "privacy cost the owner would have to audit"},
+            {"id": "phone", "label": "A message on your phone (Telegram)",
+             "works": True,
+             "how": ("one bot token and your chat id: `brain telegram how`. "
+                     "Reminders, failed actions and a start note go there; the "
+                     "outbox is encrypted and waits when the phone is off")},
         ],
         "limits": ("Nila cannot start herself before she is running. The phrase "
                    "'Nila start' works once she has audio; the icon and the hotkey "
-                   "are what actually bring her up from cold."),
+                   "are what actually bring her up from cold. Telegram carries "
+                   "messages OUT to your phone, not commands IN: a bot that "
+                   "answers needs a process holding the connection open, which "
+                   "is not built."),
     }
 
 

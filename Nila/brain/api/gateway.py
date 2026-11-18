@@ -525,6 +525,27 @@ class Gateway:
             info = tr.detect(text)
             return 200, {"ok": True, **info, "gloss": tr.gloss(text, info["language"]),
                          "explanation": tr.explain(text, info) if not info["spoken"] else ""}
+        if path == "/v1/telegram" and method == "GET":
+            # Read-only view of the phone bridge. The token is never in it: the
+            # bridge masks it at the source, so this route cannot leak it by
+            # forgetting to.
+            from ..agent.telegram import Telegram
+
+            return 200, Telegram(vault=self.vault).status()
+        if path == "/v1/telegram/test" and method == "POST":
+            from ..agent.telegram import Telegram, TelegramError
+
+            try:
+                out = Telegram(vault=self.vault).send(
+                    "Nila: a test from the dashboard.")
+            except TelegramError as exc:
+                return 400, {"ok": False, "error": str(exc)}
+            return 200, out
+        if path == "/v1/progress" and method == "GET":
+            # How much of v2 is really finished, measured against the code.
+            from ..agent import progress
+
+            return 200, progress.report()
         if path == "/v1/speak" and method == "POST":
             from ..util import speech
 

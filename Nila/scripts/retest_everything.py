@@ -622,7 +622,63 @@ def main() -> int:
 
     check("audit: an action leaves a trace", audit_trail)
 
-    # ---- 22. strict mode end to end -------------------------------------- #
+    # ---- 22. the phone bridge (no network here) -------------------------- #
+    def telegram_bridge():
+        from brain.agent import telegram as tg
+
+        calls = []
+
+        def opener(request, timeout):
+            calls.append(request.full_url)
+            return json.dumps({"ok": True, "result": {"message_id": 1}})
+
+        bot = tg.Telegram(vault=vault, opener=opener)
+        bot.set_token("123456789:AAFakeRetestTokenOnly-abcDEF")
+        if bot.configured:
+            return FAIL, "a token alone configured the bridge without a chat"
+        bot.set_chat("424242")
+        out = bot.send("Nila: re-test message")
+        token_in_body = any("AAFakeRetestTokenOnly" in c for c in calls[:-1])
+        off = tg.Telegram(vault=vault,
+                          opener=lambda r, t: (_ for _ in ()).throw(
+                              tg.urllib.error.URLError("offline")))
+        queued = off.send("while offline")
+        ok = (out.get("ok") and queued.get("queued") == 1
+              and not token_in_body and "AAFakeRetestTokenOnly" not in json.dumps(out))
+        return (PASS if ok else FAIL,
+                f"sent={out.get('sent')}, offline queued={queued.get('queued')}, "
+                f"token leaked={token_in_body}")
+        # (the token is cleared below, before the vault is closed)
+
+    check("telegram: one chat, queued when offline, token never printed",
+          telegram_bridge)
+
+    def telegram_cleared():
+        from brain.agent import telegram as tg
+
+        bot = tg.Telegram(vault=vault)
+        if not bot.token:
+            return PASS, "nothing to clear"
+        bot.clear()
+        return PASS, f"cleared; configured={bot.configured}"
+
+    check("telegram: settings can be removed again", telegram_cleared)
+
+    # ---- 23. how much of v2 is really finished --------------------------- #
+    def v2_progress():
+        from brain.agent import progress
+
+        report = progress.report()
+        ok = (report["done"] + report["partial"] + report["missing"] == report["total"]
+              and report["percent"] <= 100)
+        return (PASS if ok else FAIL,
+                f"{report['done']}/{report['total']} done ({report['percent']}%), "
+                f"{report['partial']} partial, {report['missing']} not built; "
+                f"next: {report['next'][:60]}")
+
+    check("v2: the progress number is measured, not remembered", v2_progress)
+
+    # ---- 24. strict mode end to end -------------------------------------- #
     def strict_roundtrip():
         from brain.security import strict
 

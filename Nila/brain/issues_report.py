@@ -137,6 +137,11 @@ _PATTERNS: Tuple[Tuple[re.Pattern, str], ...] = (
     (re.compile(r"\bBearer\s+[A-Za-z0-9._\-]{16,}", re.I), "Bearer <TOKEN>"),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "<AWS_KEY>"),
     (re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}\b"), "<SLACK_TOKEN>"),
+    #: Telegram bot tokens (stage 9). They are the one secret this product now
+    #: stores besides the vault passphrase, so they get a shape rule of their own:
+    #: <bot id>:<35 chars>. Written to also catch the api.telegram.org/bot<token>
+    #: URL, which is how a token most often ends up inside an error message.
+    (re.compile(r"(?<!\d)\d{6,12}:[A-Za-z0-9_\-]{30,}"), "<TELEGRAM_TOKEN>"),
     # private key material
     (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
      "<PRIVATE_KEY>"),

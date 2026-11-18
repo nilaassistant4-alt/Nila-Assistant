@@ -558,3 +558,58 @@ connectors, retention, the icons, the tool registry and its permission gate, the
 local API, the dashboard, language reading and the ZIP - and says `SKIP` with the
 exact missing piece for anything that needs a microphone, a voice, a model key or
 the network. A `SKIP` is not a pass.
+
+## Your phone (v0.2, stage 9)
+
+    brain telegram how                  # the whole setup, in five steps
+    brain telegram token 123456789:ABC… # the token BotFather gave you
+    brain telegram whoami               # your chat id, read from your /start
+    brain telegram chat 987654321
+    brain telegram test                 # a real message should arrive
+    brain telegram status               # configured? queued? which chat?
+    brain telegram queue | flush | off
+
+**About the number.** A Telegram account is tied to a phone number, but a bot
+never needs it. Nila needs the **bot token** (from @BotFather) and your **chat
+id** - a number like `987654321` that `whoami` reads after you press Start in the
+bot's chat. Nila never asks for, sees or stores your phone number, your Telegram
+login or your SIM. Telegram itself will not let a bot message first, which is why
+pressing Start once is part of the setup.
+
+Whatever may be pushed can be switched off one kind at a time:
+`brain telegram notify updates off` (reminders · errors · updates · reports).
+
+**The token is a password.** It is stored in the sealed vault - never in
+`config.json` - it is shown only as `123456…wXyZ`, and it is only ever sent to
+`api.telegram.org`. A request to any other host is refused before it leaves.
+
+**The phone being off is not a lost message.** If Telegram cannot be reached the
+message is queued, encrypted, in the vault (newest 50), and goes out on the next
+successful send or `brain telegram flush`. Reminders that came due, a failed
+action, a note when Nila starts and an issue report are the four kinds.
+
+**One way, by design.** Nila writes to your phone; she does not read replies. A
+bot that answers needs a process holding the connection open all day, and that is
+not built - `brain launcher --plan` says so next to the icon it would need.
+
+## How much of v2 is really finished (v0.2, stage 9)
+
+    brain progress                      # every feature, with its real state
+    brain progress next                 # the single most useful next step
+
+### One more thing from the same stage
+
+`setup.bat` now finishes the whole setup: `brain init` links your authenticator
+in the same step (the secret and the current code are printed once) and reminds
+you about voice enrolment, so `start-nila.bat` works the **first** time. Before
+this, a brand new vault had no second factor, so the first command a new owner
+ever ran was refused until they typed `brain totp`. The second factor is still
+required - it simply exists from the beginning now. `brain init --no-totp` skips
+it if you want to link your own key later.
+
+`done` means the code is here and needs nothing outside this machine. `partial`
+means the code is here and is waiting on an install or a key - the row says which.
+`missing` means not built. The percentage is computed from that list, and each row
+carries the dotted path of the code that must exist for it to count, so the table
+cannot claim a feature the installation does not have. The same numbers are on the
+dashboard, refreshed every 15 seconds.

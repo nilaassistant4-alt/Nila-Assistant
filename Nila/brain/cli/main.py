@@ -15,6 +15,7 @@ import getpass
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -264,8 +265,45 @@ def cmd_init(args, ui: UI) -> int:
         ui.warn("recovery codes - write these down NOW, they are shown once:")
         for i in range(0, len(codes), 2):
             ui.say("   " + "   ".join(codes[i:i + 2]))
-    vault.audit("cli_init", {"user": args.user})
+
+    # ---- set-up is done here, not left to a second command --------------- #
+    # The owner's rule was "ZIP -> nila start, nothing to type". The vault was
+    # created locked, with no second factor, which meant `brain start` refused
+    # the FIRST command a new owner ever ran. So the authenticator is linked now:
+    # the secret and the current code are printed once, and the owner adds it to
+    # their app. Nothing is weaker: the second factor is still required to open
+    # the vault, it just exists from the beginning.
+    enrolled = False
+    if not args.no_totp:
+        try:
+            from ..identity.ceremony import IdentityCeremony
+            from ..identity.totp import totp as totp_now
+
+            mk = vault.unlock(passphrase)
+            vault.begin_provisional(mk)
+            vault.start_session(mk, mode="setup")
+            # One secret, stored sealed, by the same ceremony `brain totp` uses -
+            # no second implementation of "how a TOTP secret is stored".
+            info_totp = IdentityCeremony(config, vault).enroll_totp(args.user)
+            secret = str(info_totp.get("secret") or "")
+            code = totp_now(secret)
+            enrolled = bool(secret)
+            ui.warn("your authenticator (add it now, it is shown once):")
+            ui.say(f"   secret: {secret}")
+            ui.say(f"   current code: {code}   (a new one every 30 seconds)")
+            ui.say("   In Google Authenticator / Aegis / Authy: Add account -> "
+                   "Enter a setup key -> paste the secret.")
+            vault.lock()
+        except Exception as exc:                   # never leave a half setup silent
+            ui.warn(f"the authenticator could not be linked automatically ({exc}). "
+                    "Run `brain totp` once before `brain start`.")
+    if not args.no_voice:
+        ui.say("\nOptional, and the strongest part: enrol your voice so only you can "
+               "start Nila or approve anything - `brain voice enrol` (three times, "
+               "about 3 seconds each).")
+    vault.audit("cli_init", {"user": args.user, "totp_enrolled": enrolled})
     vault.lock()
+    ui.ok("ready. Next: `brain start` (it opens the app; no token to type).")
     return 0
 
 
@@ -1759,17 +1797,31 @@ class _NoProvider:
         raise RuntimeError("this path must not ask a model anything")
 
 
-def _due_alerts(brain: Any, spoken: bool = False, voice: str = "") -> List[Dict[str, Any]]:
+def _due_alerts(brain: Any, spoken: bool = False, voice: str = "",
+                vault: Any = None) -> List[Dict[str, Any]]:
     """Reminders that came due while Nila was closed, and say them.
 
     They are consumed (closed) so the same one is not announced twice, and each
     line says how late it is. This is called by the icon paths, which are the only
-    ones that run without the owner already looking at Nila.
+    ones that run without the owner already looking at Nila - and it pushes to the
+    phone as well, because the whole point is reaching the owner who is not here.
     """
     try:
         rows = brain.due_reminders(consume=True)
     except Exception:                      # a broken record must not block the action
         return []
+    if rows and vault is not None:
+        try:
+            from ..agent.telegram import Telegram
+
+            phone = Telegram(vault=vault)
+            for row in rows:
+                late = int(row.get("late_minutes") or 0)
+                when = "now" if late < 1 else f"{late} min late"
+                phone.notify(f"Reminder ({when}): {row.get('title', '')}",
+                             kind="reminders", urgent=True)
+        except Exception:                  # a notification must never break the action
+            pass
     for row in rows:
         late = int(row.get("late_minutes") or 0)
         when = "now" if late < 1 else f"{late} min late"
@@ -1780,6 +1832,105 @@ def _due_alerts(brain: Any, spoken: bool = False, voice: str = "") -> List[Dict[
 
             speech.speak_text(line, voice=voice)
     return rows
+
+
+def cmd_telegram(args, ui: UI) -> int:
+    """The phone bridge: token, chat, test, queue - and what it refuses to do."""
+    from ..agent import telegram as tg
+    from ..agent.telegram import Telegram, TelegramError
+
+    action = (args.action or "status").lower()
+    if action in ("how", "help"):
+        print(tg._how_text())
+        return 0
+
+    config, vault = open_vault(args)
+    memory = open_memory(config, vault)
+    bridge = Telegram(vault=vault, timeout=float(args.timeout or 15))
+    try:
+        if action == "status":
+            ui.emit(bridge.status())
+        elif action == "token":
+            token = args.value or ""
+            if not token:
+                ui.err("paste the token BotFather gave you: brain telegram token 123:ABC…")
+                return 2
+            out = bridge.set_token(token)
+            out["next"] = ("now send /start to your bot in Telegram, then "
+                           "`brain telegram whoami`")
+            ui.emit(out)
+        elif action in ("whoami", "chats"):
+            ui.emit(bridge.whoami())
+        elif action in ("chat", "chat-id"):
+            ui.emit(bridge.set_chat(args.value or ""))
+        elif action == "notify":
+            ui.emit(bridge.set_notify(args.value or "", bool(args.on)))
+        elif action == "test":
+            result = bridge.send("Nila test: this is your phone bridge working. "
+                                 f"({time.strftime('%H:%M')})", kind="test")
+            ui.emit(result)
+            return 0 if result.get("ok") else 1
+        elif action == "send":
+            text = " ".join(args.text or []).strip()
+            if not text:
+                ui.err("what should Nila send? brain telegram send \"...\"")
+                return 2
+            ui.emit(bridge.send(text))
+        elif action in ("queue", "pending"):
+            ui.emit({"ok": True, "queued": bridge.pending()})
+        elif action == "flush":
+            ui.emit(bridge.flush())
+        elif action == "drop":
+            ui.emit(bridge.drop_queue())
+        elif action in ("off", "clear"):
+            ui.emit(bridge.clear())
+        else:
+            ui.err(f"unknown action '{action}'. Try: status, how, token, whoami, "
+                   "chat, notify, test, send, queue, flush, off")
+            return 2
+        return 0
+    except TelegramError as exc:
+        ui.err(str(exc))
+        return 2
+    finally:
+        memory.close()
+        vault.lock()
+
+
+def cmd_progress(args, ui: UI) -> int:
+    """One line: how far along v2 is, honestly, from the registry in code.
+
+    The numbers come from `brain.agent.progress`, which lists every feature with
+    its real state. Nothing here is typed twice, so the answer cannot drift away
+    from the code.
+    """
+    from ..agent import progress
+
+    if args.what == "next":
+        step = progress.next_step()
+        if args.json:
+            ui.emit({"ok": True, "next": step})
+        else:
+            print(f"Next: {step}")
+        return 0
+    report = progress.report()
+    if args.json:
+        ui.emit(report)
+        return 0
+    print(f"Nila v{report['version']} - {report['done']}/{report['total']} done "
+          f"({report['percent']}%), {report['partial']} partial, "
+          f"{report['missing']} not built")
+    for row in report["features"]:
+        mark = {"done": "[x]", "partial": "[~]", "missing": "[ ]"}[row["state"]]
+        print(f"  {mark} {row['label']}")
+        if row["state"] != "done" and row.get("note"):
+            print(f"        {row['note']}")
+    if report["limits"]:
+        print("\nNeeds something outside this machine:")
+        for line in report["limits"]:
+            print(f"  - {line}")
+    print(f"\nNext: {report['next']}")
+    return 0
 
 
 def cmd_talk(args, ui: UI) -> int:
@@ -1849,7 +2000,8 @@ def cmd_talk(args, ui: UI) -> int:
         # Reminders that came due while this icon was closed are announced first,
         # because they are the reason the owner pressed it.
         _due_alerts(_talk_brain(config, vault, memory),
-                    spoken=not args.no_speak, voice=args.speak_voice or "")
+                    spoken=not args.no_speak, voice=args.speak_voice or "",
+                    vault=vault)
 
         spoken = launchmod.spoken_action(said)
         action, argument = spoken.get("action", ""), spoken.get("argument", "")
@@ -2084,7 +2236,15 @@ def cmd_start(args, ui: UI) -> int:
     # is open, because after this the owner is looking at a window and not at the
     # terminal the icon started.
     try:
-        _due_alerts(_talk_brain(config, vault, memory), spoken=False)
+        _due_alerts(_talk_brain(config, vault, memory), spoken=False, vault=vault)
+    except Exception:
+        pass
+    # "Nila started" on the phone: the owner asked for any update, and this is
+    # the one event that proves the bridge works every time she comes up.
+    try:
+        from ..agent.telegram import Telegram
+
+        Telegram(vault=vault).notify("Nila started on your PC.", kind="updates")
     except Exception:
         pass
     return serve(config, vault, memory, host=args.host, port=args.port,
@@ -2179,7 +2339,7 @@ def cmd_remind(args, ui: UI) -> int:
         # The honest answer to "did anything fire while I was away?": each one is
         # shown with how late it is, and closed, so it is not announced twice.
         rows = _due_alerts(_talk_brain(config, vault, memory),
-                           spoken=bool(getattr(args, "say", False)))
+                           spoken=bool(getattr(args, "say", False)), vault=vault)
         if args.json:
             ui.emit({"ok": True, "due": rows})
         elif not rows:
@@ -2577,10 +2737,14 @@ def build_parser() -> argparse.ArgumentParser:
             sp.add_argument("--recovery", default=None, metavar="CODE",
                             help="one-time recovery code, used instead of the authenticator")
 
-    sp = sub.add_parser("init", help="create the vault and enrol recovery codes")
+    sp = sub.add_parser("init", help="create the vault, the authenticator and the codes")
     sp.add_argument("--user", default="owner")
     sp.add_argument("--label", default="", help="device label")
     sp.add_argument("--no-recovery", action="store_true")
+    sp.add_argument("--no-totp", action="store_true",
+                    help="skip linking an authenticator (you must run `brain totp` later)")
+    sp.add_argument("--no-voice", action="store_true",
+                    help="skip the voice-enrolment hint")
     add_auth(sp)
     sp.set_defaults(func=cmd_init)
 
@@ -2852,6 +3016,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--title", default="")
     add_auth(sp)
     sp.set_defaults(func=cmd_remember)
+
+    sp = sub.add_parser("telegram", help="Nila writes to your phone (one chat, one way)")
+    sp.add_argument("action", nargs="?", default="status",
+                    help="status | how | token | whoami | chat | notify | test | send | "
+                         "queue | flush | off")
+    sp.add_argument("value", nargs="?", default="", help="the token, chat id, or kind")
+    sp.add_argument("text", nargs="*", help="for `send`: the message")
+    sp.add_argument("--on", action="store_true", help="with `notify`: turn it on")
+    sp.add_argument("--timeout", type=float, default=15.0)
+    add_auth(sp)
+    sp.set_defaults(func=cmd_telegram)
+
+    sp = sub.add_parser("progress", help="how much of v2 is really finished")
+    sp.add_argument("what", nargs="?", default="", choices=["", "next"])
+    add_auth(sp)
+    sp.set_defaults(func=cmd_progress)
 
     sp = sub.add_parser("memory", help="what is old enough to let go (report, or --purge)")
     sp.add_argument("--older-than", type=int, default=90, metavar="DAYS",

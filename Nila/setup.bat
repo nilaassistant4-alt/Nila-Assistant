@@ -37,6 +37,8 @@ if exist "%BRAIN_HOME%\identity.json" (
   echo       Choose a LONG passphrase. WRITE DOWN the recovery codes it shows and keep them
   echo       OFF this computer. If you lose the passphrase, your data cannot be recovered.
   echo.
+  rem The authenticator is linked inside init now, so start-nila.bat works
+  rem on the first run instead of refusing until a second command is typed.
   python brain.py init --label "%COMPUTERNAME%"
   if errorlevel 1 (
     echo.
@@ -45,16 +47,11 @@ if exist "%BRAIN_HOME%\identity.json" (
     exit /b 1
   )
   echo.
-  echo [4/4] Linking your authenticator app. Nila will not open without it.
-  echo       Install Google Authenticator or Microsoft Authenticator on your phone first.
-  echo.
-  python brain.py totp
-  if errorlevel 1 (
-    echo.
-    echo The authenticator step did not finish. Run: python brain.py totp   ^(from nila-cmd.bat^)
-    pause
-    exit /b 1
-  )
+  echo [4/4] Your authenticator key was shown above, once.
+  echo       If you have not added it to Google Authenticator yet, run this now
+  echo       and type the 6-digit code it asks for:
+  echo           python brain.py totp
+  echo       Nila will not open without that code, which is the point.
 )
 
 echo.

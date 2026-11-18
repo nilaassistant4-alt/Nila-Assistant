@@ -428,6 +428,33 @@ async function slow() {
       p.max = 100; p.value = x.pct; d.append(p); bx.append(d);
       if (x.cap_is_default) bx.append(el("div", "Using a safe default limit. Set your real one from your Google AI Studio page.", "note"));
     });
+    // The phone bridge, read-only: set up or not, and how many messages wait.
+    try {
+      const t = await api("/v1/telegram"), ph = $("phone");
+      if (ph) {
+        ph.replaceChildren();
+        ph.append(el("div", t.configured
+          ? "Connected to chat " + t.chat_id + " · token " + t.token
+          : "Not set up. Run: brain telegram how", t.configured ? "m okc" : "m"));
+        if (t.queued) ph.append(el("div", t.queued + " message(s) waiting for a connection", "m"));
+        if (t.configured) {
+          const b = el("button", "Send a test");
+          b.onclick = () => api("/v1/telegram/test", {}).then(() => tick())
+            .catch(e => alert(e.message));
+          ph.append(b);
+        }
+      }
+    } catch (e) { /* the next slow tick tries again */ }
+    // Progress counts come from the code, not from a promise.
+    try {
+      const p = await api("/v1/progress"), v2 = $("v2");
+      if (v2) {
+        v2.replaceChildren();
+        v2.append(el("div", p.done + " of " + p.total + " done (" + p.percent + "%"
+          + (p.partial ? ", " + p.partial + " waiting on an install or a key" : "") + ")", "m"));
+        v2.append(el("div", "Next: " + p.next, "note"));
+      }
+    } catch (e) { /* ditto */ }
     const c = await api("/v1/capabilities"), cx = $("caps"); cx.replaceChildren();
     c.capabilities.forEach(i => {
       const row = el("div", null, "cap"); row.title = [i.reason, i.how].filter(Boolean).join(" — ");
