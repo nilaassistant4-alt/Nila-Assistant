@@ -1456,6 +1456,59 @@ def cmd_issue(args, ui: UI) -> int:
             memory.close()
 
 
+def cmd_remind(args, ui: UI) -> int:
+    """Set, list, close or snooze a reminder - offline, in the encrypted store."""
+    from ..agent.reminders import ReminderBook, ReminderError, next_after, parse_when
+
+    config, vault = open_vault(args)
+    memory = open_memory(config, vault)
+    book = ReminderBook(memory)
+    action = (args.action or "list").lower()
+    words = list(args.text or [])
+    if action not in ("add", "list", "ls", "done", "snooze", "cancel"):
+        words.insert(0, args.action)          # `brain remind in 10 minutes to ...`
+        action = "add"
+    phrase = " ".join(words)
+    try:
+        if action == "add" or (action == "list" and phrase):
+            if not phrase:
+                ui.err("what should I remind you about? e.g. `brain remind in 10 minutes "
+                       "to drink water`")
+                return 2
+            when = parse_when(phrase)
+            if when.repeat:
+                when.next_ms = next_after(when.at_ms, when.repeat, when.weekday)
+            rec = book.add(phrase, when, original=phrase)
+            ui.emit({"ok": True, "id": rec.id, "title": rec.title,
+                     "at_ms": when.at_ms, "repeat": when.repeat,
+                     "line": book.render()})
+            return 0
+        if action in ("list", "ls"):
+            ui.emit({"ok": True, "line": book.render(), "count": len(book.all())})
+            return 0
+        if action in ("done", "cancel", "snooze"):
+            rec = book.get(str(args.id)) or book.by_number(args.id)
+            if rec is None:
+                ui.err(f"no reminder '{args.id}' - run `brain remind list`")
+                return 2
+            if action == "cancel":
+                book.cancel(rec)
+            elif action == "snooze":
+                book.snooze(rec, float(args.minutes or 10))
+            else:
+                book.close(rec, done=True)
+            ui.emit({"ok": True, "id": rec.id, "action": action, "line": book.render()})
+            return 0
+        ui.err(f"unknown action '{action}'")
+        return 2
+    except ReminderError as exc:
+        ui.err(str(exc))
+        return 2
+    finally:
+        memory.close()
+        vault.lock()
+
+
 def cmd_models(args, ui: UI) -> int:
     """The model pack: what is here, what to add, and which brain does which job."""
     from ..agent import models as pack
@@ -1870,6 +1923,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--id", default=None, help="instruction id (for edit/remove)")
     add_auth(sp)
     sp.set_defaults(func=cmd_instruct)
+
+    sp = sub.add_parser("remind", help="reminders: set, list, done, snooze, cancel (offline)")
+    # Not `choices=[...]`: the natural typing is `brain remind in 10 minutes to
+    # drink water`, and argparse would reject the sentence before this command
+    # ever saw it. The action is recognised from the first word instead.
+    sp.add_argument("action", nargs="?", default="list",
+                    help="add | list | done | snooze | cancel (or just the sentence)")
+    sp.add_argument("text", nargs="*", help="e.g. 'in 10 minutes to drink water'")
+    sp.add_argument("--id", help="reminder id or its number in the list")
+    sp.add_argument("--minutes", type=float, default=10, help="for snooze")
+    add_auth(sp)
+    sp.set_defaults(func=cmd_remind)
 
     sp = sub.add_parser("models", help="the model pack: what is here, what each brain does")
     sp.add_argument("action", nargs="?", choices=["list", "use"], default="list")

@@ -150,11 +150,16 @@ class Turn:
     error: str = ""
     #: where the answer was produced, for the UI: {"where","label","notice","blocked"}
     route: Dict[str, Any] = field(default_factory=dict)
+    #: reminders whose time arrived (stage 2). Shown above the answer, never
+    #: woven into it: an alert and an answer must not be able to impersonate one
+    #: another.
+    alerts: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {"question": self.question, "answer": self.answer, "provider": self.provider,
                 "tool_calls": self.tool_calls, "memories": self.memories, "ms": self.ms,
-                "ok": self.ok, "error": self.error, "route": self.route}
+                "ok": self.ok, "error": self.error, "route": self.route,
+                "alerts": self.alerts}
 
 
 class Brain:
@@ -209,6 +214,80 @@ class Brain:
 
     def _audit(self, event: str, data: Dict[str, Any]) -> None:
         self.vault.audit(event, data)
+
+    # -- reminders (stage 2) -------------------------------------------- #
+    def reminder_book(self) -> Any:
+        from .reminders import ReminderBook
+
+        return ReminderBook(self.memory)
+
+    def due_reminders(self, consume: bool = False) -> List[Dict[str, Any]]:
+        """Reminders whose time has arrived. Repeating ones roll forward.
+
+        Called at the start of every turn and by the local API, so an alert
+        appears the moment Nila is next touched. This is the honest limit of a
+        tool with no background service: nothing fires while the program is
+        closed, so a reminder that came due overnight is reported as MISSED, with
+        how late it is, instead of being shown as if it were happening now.
+        """
+        try:
+            book = self.reminder_book()
+            now = now_ms()
+            rows = book.due_now()
+            out = []
+            for rec in rows:
+                meta = dict(rec.meta or {})
+                late_min = max(0, int((now - int(meta.get("at_ms") or 0)) / 60000))
+                out.append({"id": rec.id, "title": rec.title,
+                            "at_ms": int(meta.get("at_ms") or 0),
+                            "late_minutes": late_min,
+                            "repeat": meta.get("repeat") or "",
+                            "text": rec.body})
+                if consume:
+                    book.close(rec, done=True)
+            if consume and out:
+                self._audit("reminder_fired", {"count": len(out),
+                                               "ids": [o["id"] for o in out]})
+            return out
+        except Exception:
+            # A reminder must never break a turn, and a turn must never invent
+            # one. Silently empty is the only safe failure here.
+            return []
+
+    def _reminder_intent(self, text: str, started: int) -> Optional[Turn]:
+        """The turn-shaped form of `remind me ...`, or None to carry on normally."""
+        from .reminders import ReminderError, describe, parse_when
+
+        low = " ".join(text.lower().split())
+        asks = bool(re.search(r"\bremind (me|us)\b|\breminders?\b|"
+                              r"நினைவூட்ட", low))
+        if not asks:
+            return None
+        book = self.reminder_book()
+        has_time = bool(re.search(r"\bin \d|\bat \d|\btomorrow\b|\bevery\b|"
+                                  r"\d{1,2}[:.]\d{2}|நாளை|தினமும்|மணிக்கு|நிமிட", low))
+        listing = re.search(r"\b(list|show|what|which|pending|my)\b|^\s*reminders?\s*[?.!]*$|"
+                            r"என்ன", low)
+        if listing and not has_time:
+            return Turn(text, book.render(), ms=now_ms() - started)
+        try:
+            when = parse_when(text)
+        except ReminderError as exc:
+            return Turn(text, f"{exc}\n\n{self._reminder_hint()}", ms=now_ms() - started)
+        from .reminders import next_after
+
+        if when.repeat:
+            when.next_ms = next_after(when.at_ms, when.repeat, when.weekday)
+        rec = book.add(text, when, original=text)
+        self._audit("reminder_added", {"id": rec.id, "at_ms": when.at_ms,
+                                       "repeat": when.repeat})
+        return Turn(text, "Set - " + describe(rec, now_ms()).strip(), ms=now_ms() - started)
+
+    @staticmethod
+    def _reminder_hint() -> str:
+        return ("Try: `remind me in 10 minutes to drink water`, "
+                "`remind me tomorrow at 9 to take the tablet`, or "
+                "`remind me every day at 22:00 to take the tablet`.")
 
     # -- strict mode (B) ------------------------------------------------- #
     def _strict(self) -> Any:
@@ -536,6 +615,19 @@ class Brain:
                                "step only. Tell me again what to do."),
                         ms=now_ms() - started)
 
+        # A reminder is answered by code, before any model: the time is parsed
+        # deterministically and the owner's own sentence is stored. Putting it in
+        # front of routing is what makes "remind me..." work with no model, no
+        # key and no network - and it cannot be paraphrased away.
+        # Alerts first: a reminder that came due is reported on the next turn,
+        # and only then is the new request handled.
+        fired = self.due_reminders(consume=True)
+
+        reminder_turn = self._reminder_intent(text, started)
+        if reminder_turn is not None:
+            reminder_turn.alerts = fired
+            return reminder_turn
+
         self._turn_plan = None
         if text.startswith("/"):
             turn = self._slash(text, started)
@@ -724,7 +816,7 @@ class Brain:
 
         turn = Turn(question=text, answer=answer, provider=provider_used,
                     tool_calls=calls_made, memories=memories, ms=now_ms() - started,
-                    ok=not error, error=error, route=route)
+                    ok=not error, error=error, route=route, alerts=fired)
         if not self.vault.touch_session():
             self.history.clear()
             return Turn(text, "", ok=False,
@@ -853,7 +945,22 @@ class Brain:
                 out.append(f"• Deleted `{res.get('id')}`"
                            + (" permanently." if res.get("hard") else " (tombstoned, will sync)."))
             elif name == "calculate":
-                out.append(f"• {res.get('expression')} = {res.get('result')}")
+                # A money/unit answer carries its own sentence and its steps; a
+                # plain expression has neither, so both shapes are printed here.
+                if res.get("answer"):
+                    out.append("• " + str(res["answer"]))
+                    for step in res.get("steps") or []:
+                        out.append("    " + str(step))
+                else:
+                    out.append(f"• {res.get('expression')} = {res.get('result')}")
+            elif name in ("add_reminder", "list_reminders", "close_reminder"):
+                if name == "list_reminders":
+                    out.append("• " + (res.get("rendered") or "No reminders yet.")
+                               .replace("\n", "\n  "))
+                elif res.get("ok") is False:
+                    out.append(f"• {res.get('error')}")
+                else:
+                    out.append("• Reminder saved.")
             elif name == "current_time":
                 out.append(f"• Now: {res.get('iso')} ({res.get('weekday')})")
             elif name == "memory_stats":
@@ -886,6 +993,7 @@ class Brain:
   /forget <id> [--hard]                       tombstone (or permanently delete)
   /stats                                      vault health
   /session                                    security session state
+  /reminders                                  list your reminders
   /challenge                                  issue a voice challenge (prints phrase)
   /verify <wav>                               score a voice sample (no unlock)
   /sync [--dry-run]                           push+pull with the cloud blob store
@@ -898,7 +1006,11 @@ class Brain:
   /lock                                       zeroise the key and lock
   /provider                                   show the active LLM provider
   /help                                       this text
-anything else is sent to the agent."""
+anything else is sent to the agent. Reminders need no command:
+  remind me in 10 minutes to drink water
+  remind me tomorrow at 9 to take the tablet
+  remind me every day at 22:00 to take the tablet
+Maths and money need no command either: 18% of 1250 · GST on 2499 · 5 feet in cm"""
 
     def _slash(self, text: str, started: int) -> Turn:
         try:
@@ -920,6 +1032,8 @@ anything else is sent to the agent."""
         try:
             if cmd == "help":
                 answer = self.HELP
+            elif cmd in ("reminders", "reminder", "reminders-list"):
+                answer = self.reminder_book().render()
             elif cmd == "remember":
                 body = positional()
                 m = re.search(r"--(?:kind)\s+(\S+)", text)

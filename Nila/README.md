@@ -350,3 +350,26 @@ answering on 127.0.0.1 with the model pulled - and a model that is not present i
 never chosen. Small questions are answered by the cheapest brain that can do the
 job (usually the built-in engine, 0 bytes), real work goes to the big one, and
 every reply says which brain answered and whether it was free.
+
+## Reminders (v0.2, stage 2)
+
+    brain remind "in 10 minutes to drink water"
+    brain remind "tomorrow at 9 to take the tablet"
+    brain remind "every day at 22:00 to take the tablet"
+    brain remind list          # or just: remind me ...
+    brain remind done --id 1   # snooze --id 1 --minutes 5 / cancel --id 1
+
+A reminder is the owner's own sentence, stored in the encrypted memory store and
+rendered by code - never paraphrased by a model, never sent anywhere. In the
+chat the same sentences work with no model configured, and an alert that came due
+is printed above the next answer, with how late it is if the PC was asleep.
+
+## Everyday maths
+
+   18% of 1250        1250-ல 18 சதவீதம்      இருநூறு ரூபாய்க்கு 15 சதவீதம்
+   GST on 2499        GST inside 2950        10% discount on 899
+   simple interest on 50000 at 8% for 3 years
+   5 feet in cm       2 kg in lb             5 அடி எத்தனை சென்டிமீட்டர்
+
+Every answer shows its steps. The arithmetic is plain Python with no `eval`;
+amounts are rounded half-up the way a shop rounds.

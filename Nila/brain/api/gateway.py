@@ -509,6 +509,48 @@ class Gateway:
         # owner profile: facts, not orders (B)
         # ------------------------------------------------------------ #
         # ------------------------------------------------------------ #
+        # reminders (stage 2) - offline, encrypted, rendered by code
+        # ------------------------------------------------------------ #
+        if path in ("/v1/reminders", "/v1/reminders/due") and method == "GET":
+            book = self.brain.reminder_book()
+            if path.endswith("/due"):
+                return 200, {"ok": True, "due": self.brain.due_reminders(consume=False)}
+            return 200, {"ok": True, "count": len(book.all()),
+                         "line": book.render(),
+                         "reminders": [{"id": r.id, "title": r.title,
+                                        **dict(r.meta or {})} for r in book.all()]}
+        if path == "/v1/reminders" and method == "POST":
+            from ..agent.reminders import next_after, parse_when, ReminderError
+
+            phrase = str(body.get("text") or body.get("when") or "").strip()
+            if not phrase:
+                return 400, {"ok": False, "error": "say the time: 'in 10 minutes to ...'"}
+            try:
+                when = parse_when(phrase)
+            except ReminderError as exc:
+                return 400, {"ok": False, "error": str(exc)}
+            if when.repeat:
+                when.next_ms = next_after(when.at_ms, when.repeat, when.weekday)
+            rec = self.brain.reminder_book().add(phrase, when, original=phrase)
+            return 200, {"ok": True, "id": rec.id, "title": rec.title,
+                         "at_ms": when.at_ms, "repeat": when.repeat}
+        if path == "/v1/reminders/close" and method == "POST":
+            book = self.brain.reminder_book()
+            target = str(body.get("id") or body.get("number") or "")
+            rec = book.get(target) or book.by_number(target)
+            if rec is None:
+                return 404, {"ok": False, "error": f"no reminder '{target}'"}
+            action = str(body.get("action") or "done").lower()
+            if action == "cancel":
+                book.cancel(rec)
+            elif action == "snooze":
+                book.snooze(rec, float(body.get("minutes") or 10))
+            else:
+                book.close(rec, done=True)
+            return 200, {"ok": True, "id": rec.id, "action": action,
+                         "line": book.render()}
+
+        # ------------------------------------------------------------ #
         # the model pack (small brain / big brain workflow)
         # ------------------------------------------------------------ #
         if path == "/v1/models" and method == "GET":
