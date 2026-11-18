@@ -678,7 +678,123 @@ def main() -> int:
 
     check("v2: the progress number is measured, not remembered", v2_progress)
 
-    # ---- 24. strict mode end to end -------------------------------------- #
+    # ---- 24. the v0.2 business work (interview, late, weekly, export) ---- #
+    def projects_flow():
+        from brain.projects.store import ProjectError, ProjectStore
+
+        st = ProjectStore(memory)
+        st.create("Re-test shop", "a stall")
+        q1 = st.interview("Re-test shop")
+        st.set_canvas("Re-test shop", q1["block"], "students")
+        q2 = st.interview("Re-test shop")
+        st.add_milestone("Re-test shop", "stove", "2020-01-05")
+        late = st.late_milestones()
+        weekly = st.weekly(7)
+        refused = False
+        try:
+            st.add_milestone("Re-test shop", "bad", "next week")
+        except ProjectError:
+            refused = True
+        ok = (q1["block"] != q2["block"] and len(late) == 1
+              and weekly["projects_touched"] == 1 and refused)
+        return (PASS if ok else FAIL,
+                f"one question at a time ({q1['label']} -> {q2['label']}), "
+                f"{len(late)} late, weekly={weekly['projects_touched']} project(s), "
+                f"nonsense date refused={refused}")
+
+    check("projects: one question at a time, late milestones, weekly, no guessing",
+          projects_flow)
+
+    def project_export():
+        import tempfile
+
+        from brain.projects.store import ProjectStore
+
+        st = ProjectStore(memory)
+        st.create("Export check", "x")
+        st.set_canvas("Export check", "customers", "students")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = st.export_summary("Export check", tmp)
+            text = open(out["path"], encoding="utf-8").read()
+        ok = "Export check" in text and "students" in text
+        return (PASS if ok else FAIL, f"{out['chars']} chars, plain text, folder chosen by the owner")
+
+    check("projects: a summary exported to a .txt you choose", project_export)
+
+    # ---- 25. the desktop app is installable ------------------------------ #
+    def installable_app():
+        import json as _json
+
+        from brain.api import dashboard
+
+        manifest = _json.loads(dashboard.asset("/manifest.json")[0])
+        html = dashboard.asset("/")[0].decode()
+        icon = dashboard.asset("/icon.svg")
+        ok = ('rel="manifest"' in html and manifest["display"] == "standalone"
+              and icon is not None and "manifest-src 'self'" in dashboard.CSP)
+        return (PASS if ok else FAIL,
+                f"manifest display={manifest['display']}, icon {icon[1]}, page links the manifest")
+
+    check("platform: Chrome 'Install as app' has a manifest and an icon", installable_app)
+
+    # ---- 26. the two D-drive helpers ------------------------------------- #
+    def move_helper():
+        import shutil as _sh
+        import tempfile
+
+        import importlib.util
+
+        path = ROOT / "tools" / "move_storage.py"
+        spec = importlib.util.spec_from_file_location("move_storage", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "vault"
+            (home / "sub").mkdir(parents=True)
+            (home / "memory.db").write_bytes(b"x" * 4096)
+            (home / "sub" / "n.txt").write_text("தமிழ்")
+            target = Path(tmp) / "D"
+            import contextlib
+            import io
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = mod.move(home, target, dry_run=False, yes=True)
+            same = (target / "sub" / "n.txt").read_text(encoding="utf-8") == "தமிழ்"
+        return (PASS if code == 0 and same else FAIL,
+                f"exit={code}, every file compared by SHA-256, old folder kept")
+
+    check("storage: move-to-d copies, verifies, then switches", move_helper)
+
+    def backup_helper():
+        import sqlite3
+        import tempfile
+        import importlib.util
+
+        path = ROOT / "tools" / "backup_check.py"
+        spec = importlib.util.spec_from_file_location("backup_check", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "vault"
+            home.mkdir()
+            con = sqlite3.connect(home / "memory.db")
+            con.execute("CREATE TABLE t (a)")
+            con.executemany("INSERT INTO t VALUES (?)", [(i,) for i in range(5)])
+            con.commit()
+            con.close()
+            target = Path(tmp) / "D"
+            import contextlib
+            import io
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = mod.backup(home, target, dry_run=False, yes=True)
+                synced = mod.backup(home, Path(tmp) / "Google Drive" / "b", dry_run=True)
+        return (PASS if code == 0 and synced == 2 else FAIL,
+                f"restored 5 records and counted them; a synced folder refused ({synced})")
+
+    check("backup: dated, restored, counted - and never inside Google Drive", backup_helper)
+
+    # ---- 27. strict mode end to end -------------------------------------- #
     def strict_roundtrip():
         from brain.security import strict
 

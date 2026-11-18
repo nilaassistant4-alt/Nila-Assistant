@@ -51,6 +51,19 @@ class UI:
     def ok(self, msg: str) -> None:
         self.say(f"\033[32m{msg}\033[0m")
 
+    def once(self, msg: str) -> None:
+        """A secret shown exactly one time, so it survives `--quiet` and `--json`.
+
+        Recovery codes and the authenticator key are printed once and never
+        again; the only copy the owner will ever have is on this screen. `--quiet`
+        is for scripting the uninteresting parts, not for throwing away the key
+        to the vault - and `--json` gets it on stderr so a parser still works.
+        """
+        if self.json:
+            print(f"\033[33m! {msg}\033[0m", file=sys.stderr)
+        else:
+            print(f"\033[33m! {msg}\033[0m", file=sys.stderr)
+
     def emit(self, payload: Dict[str, Any]) -> None:
         if self.json:
             print(json.dumps(payload, indent=2, default=str))
@@ -262,9 +275,9 @@ def cmd_init(args, ui: UI) -> int:
         from ..identity.ceremony import IdentityCeremony
 
         codes = IdentityCeremony(config, vault).enroll_recovery_codes(8)
-        ui.warn("recovery codes - write these down NOW, they are shown once:")
+        ui.once("recovery codes - write these down NOW, they are shown once:")
         for i in range(0, len(codes), 2):
-            ui.say("   " + "   ".join(codes[i:i + 2]))
+            ui.once("   " + "   ".join(codes[i:i + 2]))
 
     # ---- set-up is done here, not left to a second command --------------- #
     # The owner's rule was "ZIP -> nila start, nothing to type". The vault was
@@ -288,11 +301,11 @@ def cmd_init(args, ui: UI) -> int:
             secret = str(info_totp.get("secret") or "")
             code = totp_now(secret)
             enrolled = bool(secret)
-            ui.warn("your authenticator (add it now, it is shown once):")
-            ui.say(f"   secret: {secret}")
-            ui.say(f"   current code: {code}   (a new one every 30 seconds)")
-            ui.say("   In Google Authenticator / Aegis / Authy: Add account -> "
-                   "Enter a setup key -> paste the secret.")
+            ui.once("your authenticator (add it now, it is shown once):")
+            ui.once(f"   secret: {secret}")
+            ui.once(f"   current code: {code}   (a new one every 30 seconds)")
+            ui.once("   In Google Authenticator / Aegis / Authy: Add account -> "
+                    "Enter a setup key -> paste the secret.")
             vault.lock()
         except Exception as exc:                   # never leave a half setup silent
             ui.warn(f"the authenticator could not be linked automatically ({exc}). "
@@ -905,9 +918,14 @@ def cmd_memory(args, ui: UI) -> int:
 
     config, vault = open_vault(args)
     memory = open_memory(config, vault)
+    # Two spellings of the same two jobs: `brain memory purge` (what an owner
+    # types) and `brain memory --purge --yes` (what the first version required,
+    # where `brain memory report` was an argparse error instead of a report).
+    purge = bool(args.purge or getattr(args, "action", "") == "purge")
+    yes = bool(args.yes or getattr(args, "action", "") == "purge")
     try:
-        if args.purge:
-            out = retention.purge(memory, days=args.older_than, apply=bool(args.yes))
+        if purge:
+            out = retention.purge(memory, days=args.older_than, apply=yes)
             if out.get("purged"):
                 vault.audit("memory_purge", {"count": out["purged"],
                                              "window_days": out["window_days"]})
@@ -2217,6 +2235,144 @@ def cmd_web(args, ui: UI) -> int:
     return 0
 
 
+def cmd_project(args, ui: UI) -> int:
+    """The owner's v0.2 business work, on the command line.
+
+    Six things the confirmed scope names, in the order they are useful: list,
+    show, one-question interview, note, milestone (with a due day), status, and
+    an export to a plain text file the owner chooses. The dashboard calls the
+    same store methods, so the two cannot disagree.
+    """
+    from ..projects.files import FileStore
+    from ..projects.store import ProjectError, ProjectStore
+
+    config, vault = open_vault(args)
+    memory = open_memory(config, vault)
+    files = FileStore(config.home / "files", lambda: vault.session.mk)
+    st = ProjectStore(memory, files)
+    action = (args.action or "").lower()
+    try:
+        if action in ("", "list"):
+            out = st.listing()
+            late = st.late_milestones()
+            out["late"] = late
+            if out["projects"]:
+                out["note"] = (out.get("note") or "")
+            ui.emit(out)
+            if not args.json:
+                if not out["projects"]:
+                    print("No projects yet. `brain project new \"Tea shop\" - a small tea stall`")
+                for late_row in late:
+                    print(f"  LATE {late_row['days_late']:>3} d  {late_row['project']}: "
+                          f"{late_row['text']} (due {late_row['due']})")
+            return 0
+        if action == "new":
+            title = " ".join(args.text[:1]).strip()
+            idea = " ".join(args.text[1:]).strip()
+            if not title:
+                return ui.err('usage: brain project new "Tea shop" - a small stall near the bus stand')
+            return _emit_project(ui, st.create(title, idea), args)
+        ref = " ".join(args.text[:1]).strip()
+        if action == "show":
+            if not ref:
+                return ui.err("usage: brain project show <name or id>")
+            return _emit_project(ui, {"project": st.get(ref), "report": st.report(ref)}, args)
+        if action == "ask":
+            if not ref:
+                return ui.err("usage: brain project ask <name or id>")
+            q = st.interview(ref)
+            ui.emit(q)
+            if not args.json and not q["done"]:
+                print(f"[{q['filled']}/{q['total']}] {q['label']}: {q['question']}")
+            elif not args.json:
+                print(q["message"])
+            return 0
+        if action == "answer":
+            # the interview's own answer path, so nobody has to know block keys
+            if not ref or len(args.text) < 2:
+                return ui.err("usage: brain project answer <name> <answer>")
+            q = st.interview(ref)
+            if q["done"]:
+                return ui.err("every block is filled")
+            return _emit_project(ui, st.set_canvas(ref, q["block"], " ".join(args.text[1:])), args)
+        if action == "note":
+            if not ref or len(args.text) < 2:
+                return ui.err("usage: brain project note <name> <text>")
+            return _emit_project(ui, st.add_note(ref, " ".join(args.text[1:])), args)
+        if action == "milestone":
+            if not ref or len(args.text) < 2:
+                return ui.err("usage: brain project milestone <name> <text> [--due 2026-12-01]")
+            return _emit_project(ui, st.add_milestone(ref, " ".join(args.text[1:]),
+                                                      getattr(args, "due", "") or ""), args)
+        if action == "late":
+            late = st.late_milestones()
+            ui.emit({"late": late, "count": len(late)})
+            if not args.json:
+                if not late:
+                    print("Nothing is late.")
+                for row in late:
+                    print(f"  {row['days_late']:>3} d late  {row['project']}: {row['text']} "
+                          f"(due {row['due']})")
+            return 0
+        if action == "status":
+            if not ref:
+                return ui.err("usage: brain project status <name> active|paused|done")
+            status = " ".join(args.text[1:]).strip().lower()
+            return _emit_project(ui, st.set_status(ref, status), args)
+        if action == "weekly":
+            out = st.weekly(getattr(args, "days", 7) or 7)
+            ui.emit(out)
+            if not args.json:
+                print(out["line"])
+                for row in out["projects"]:
+                    print(f"  {row['project']} ({row['status']}): "
+                          f"{row['notes_this_week']} note(s), {row['finished_this_week']} "
+                          f"finished. Next: {row['next']}")
+                for row in out["late"]:
+                    print(f"  LATE {row['days_late']} d: {row['project']}: {row['text']}")
+            return 0
+        if action == "export":
+            if not ref:
+                return ui.err("usage: brain project export <name> [--folder D:/Notes]")
+            out = st.export_summary(ref, getattr(args, "folder", "") or "")
+            vault.audit("project_exported", {"chars": out["chars"]})
+            ui.emit(out)
+            return 0
+        if action == "done":
+            if not ref or len(args.text) < 2:
+                return ui.err("usage: brain project done <name> 2   (milestone number)")
+            return _emit_project(ui, st.complete_milestone(ref, int(" ".join(args.text[1:]))),
+                                 args)
+    except ProjectError as exc:
+        memory.close()
+        vault.lock()
+        return ui.err(str(exc))
+    except ValueError:
+        memory.close()
+        vault.lock()
+        return ui.err("that milestone number is not a number")
+    memory.close()
+    vault.lock()
+    return ui.err(f"unknown action '{action}' (list new show ask answer note milestone "
+                  "done late status export)")
+
+
+def _emit_project(ui: UI, payload: Dict[str, Any], args) -> int:
+    ui.emit(payload)
+    if not getattr(args, "json", False):
+        summary = (payload.get("summary") or (payload.get("report") or {}).get("summary")
+                   or (payload.get("project") or {}).get("summary") or "")
+        if summary:
+            print(summary)
+        proj = payload.get("project") or payload
+        if isinstance(proj, dict) and proj.get("title"):
+            print(f"  {proj['title']}: business model {proj.get('canvas_filled', 0)}/"
+                  f"{proj.get('canvas_total', 9)}, milestones "
+                  f"{proj.get('milestones_done', 0)}/{proj.get('milestones_total', 0)} done"
+                  + (f", {proj['milestones_late']} LATE" if proj.get("milestones_late") else ""))
+    return 0
+
+
 def cmd_start(args, ui: UI) -> int:
     """One command: unlock if needed, then open the app.
 
@@ -2721,21 +2877,35 @@ def build_parser() -> argparse.ArgumentParser:
                    help="use a weaker scrypt cost (tests/benchmarks only!)")
     p.add_argument("--version", action="version",
                    version=f"personal-brain {__import__('brain').__version__}")
+    # The unlock flags belong to the TOP level, because argparse only understands
+    # "brain --passphrase-env PW chat". They used to exist solely on
+    # sub-subparsers, so the documented global form put an invalid command name
+    # ("PW") where the command goes and answered with a 20-line usage error.
+    # Both positions now work: argparse hands the leftover value to whichever
+    # subparser declares the same option (SUPPRESS below keeps the one that was
+    # actually given).
+    p.add_argument("--passphrase", default=None, help=argparse.SUPPRESS)
+    p.add_argument("--passphrase-env", default=None, metavar="VAR",
+                   help="read the passphrase from this environment variable")
+    p.add_argument("--passphrase-stdin", action="store_true",
+                   help="read the passphrase from stdin")
+    p.add_argument("--totp", default=None, metavar="CODE",
+                   help="authenticator code (otherwise you are prompted)")
+    p.add_argument("--recovery", default=None, metavar="CODE",
+                   help="one-time recovery code, used instead of the authenticator")
     sub = p.add_subparsers(dest="command", required=True)
 
     def add_auth(sp):
-        sp.add_argument("--passphrase", default=None, help=argparse.SUPPRESS)
-        sp.add_argument("--passphrase-env", default=None, metavar="VAR",
-                        help="read the passphrase from this environment variable")
-        sp.add_argument("--passphrase-stdin", action="store_true",
-                        help="read the passphrase from stdin")
+        # SUPPRESS: the default is None at both levels, so an absent subparser
+        # value must not overwrite the value parsed at the top level.
+        sp.add_argument("--passphrase", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        sp.add_argument("--passphrase-env", default=argparse.SUPPRESS, metavar="VAR")
+        sp.add_argument("--passphrase-stdin", action="store_true", default=argparse.SUPPRESS)
         existing = {o for a in sp._actions for o in a.option_strings}   # `unlock` has its own
         if "--totp" not in existing:
-            sp.add_argument("--totp", default=None, metavar="CODE",
-                            help="authenticator code (otherwise you are prompted)")
+            sp.add_argument("--totp", default=argparse.SUPPRESS, metavar="CODE")
         if "--recovery" not in existing:
-            sp.add_argument("--recovery", default=None, metavar="CODE",
-                            help="one-time recovery code, used instead of the authenticator")
+            sp.add_argument("--recovery", default=argparse.SUPPRESS, metavar="CODE")
 
     sp = sub.add_parser("init", help="create the vault, the authenticator and the codes")
     sp.add_argument("--user", default="owner")
@@ -3028,12 +3198,26 @@ def build_parser() -> argparse.ArgumentParser:
     add_auth(sp)
     sp.set_defaults(func=cmd_telegram)
 
-    sp = sub.add_parser("progress", help="how much of v2 is really finished")
-    sp.add_argument("what", nargs="?", default="", choices=["", "next"])
+    sp = sub.add_parser("project", help="your business projects: idea, canvas, milestones")
+    sp.add_argument("action", nargs="?", default="list",
+                    choices=["list", "new", "show", "ask", "answer", "note", "milestone",
+                             "done", "late", "status", "export", "weekly"])
+    sp.add_argument("text", nargs="*", help="the project name, then the words")
+    sp.add_argument("--due", default="", metavar="DATE", help="for a milestone, e.g. 2026-12-01")
+    sp.add_argument("--days", type=int, default=7, metavar="N",
+                    help="for `weekly`: how far back to count (default 7)")
+    sp.add_argument("--folder", default="", metavar="FOLDER", help="where `export` writes")
     add_auth(sp)
+    sp.set_defaults(func=cmd_project)
+
+    sp = sub.add_parser("progress", help="how much of v2 is really finished "
+                                         "(reads the code only; no unlock needed)")
+    sp.add_argument("what", nargs="?", default="", choices=["", "next"])
     sp.set_defaults(func=cmd_progress)
 
     sp = sub.add_parser("memory", help="what is old enough to let go (report, or --purge)")
+    sp.add_argument("action", nargs="?", default="", choices=["", "report", "purge"],
+                    help="`report` = the default; `purge` = the same as --purge --yes")
     sp.add_argument("--older-than", type=int, default=90, metavar="DAYS",
                     help="the window, in days (default 90 = about 3 months)")
     sp.add_argument("--purge", action="store_true", help="delete, don't just list")
@@ -3167,6 +3351,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="print the access token (avoid: it lands in terminal history)")
     add_auth(sp)
     sp.set_defaults(func=cmd_serve)
+
+    # Every subcommand accepts the unlock flags, whether or not it opens the
+    # vault. The old build answered `brain memory report --passphrase-env PW`
+    # with a 20-line argparse error while `brain progress next --passphrase-env
+    # PW` worked - which teaches an owner that the flags are unreliable, so no
+    # script can use one form of the command everywhere. Unknown-to-this-command
+    # flags are simply ignored by the commands that never read them.
+    for name, sub in sub.choices.items():
+        if name in ("unlock", "init"):          # both define their own spellings
+            continue
+        existing = {o for a in sub._actions for o in a.option_strings}
+        if "--passphrase-env" not in existing:
+            add_auth(sub)
 
     return p
 

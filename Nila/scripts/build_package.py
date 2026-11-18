@@ -72,12 +72,18 @@ REQUIRED_FILES = [
     "nila_mandate_tests.py",
     "brain/api/dashboard.py", "brain/api/static/dashboard.html",
     "brain/api/static/dashboard.css", "brain/api/static/dashboard.js",
+    # Chrome's "Install as app" needs both, and a missing icon fails silently
+    # (the prompt simply never appears), so the builder must require them.
+    "brain/api/static/manifest.json", "brain/api/static/icon.svg",
     # v0.1 (Windows owner kit)
     "START_HERE.md", "ROADMAP.md", "PROGRESS.md", "CHANGELOG.md", "docs/CAPABILITIES.md",
     "setup.bat", "start-nila.bat", "report.bat", "nila-env.bat", "nila-cmd.bat",
     "brain/projects/store.py", "brain/projects/files.py", "brain/projects/tools.py",
     "brain/agent/router.py", "brain/agent/ledger.py", "brain/diagnostics.py",
     "tests/test_v01.py",
+    # v0.2 - the D-drive helpers the owner specified
+    "move-to-d.bat", "backup-to-d.bat", "install-local-ai.bat",
+    "tools/move_storage.py", "tools/backup_check.py", "tools/install_local_ai.py",
 ]
 
 #: source trees whose .py files must ALL be present

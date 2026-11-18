@@ -264,6 +264,19 @@ $("cxtotp").addEventListener("keydown", e => { if (e.key === "Enter") cxApprove(
 // ---------------------------------------------------------------- projects
 async function loadProjects() {
   try {
+    // Late milestones go FIRST. The owner's rule: things that slipped must be
+    // in front of him, not found by scrolling through nine canvas blocks.
+    try {
+      const l = await api("/v1/projects/late"), lbox = $("late");
+      if (lbox) {
+        lbox.replaceChildren();
+        if (l.late.length) {
+          lbox.append(el("div", "Late (" + l.count + ")", "m warn"));
+          l.late.slice(0, 6).forEach(m => lbox.append(el("div",
+            m.days_late + " d late · " + m.project + ": " + m.text + " (due " + m.due + ")", "m")));
+        }
+      }
+    } catch (e) { /* the list below still loads */ }
     const d = await api("/v1/projects"), box = $("plist"); box.replaceChildren();
     if (!d.projects.length) box.append(el("div", "No projects yet. Add an idea below.", "mu"));
     d.projects.forEach(p => {
@@ -302,12 +315,37 @@ async function showProject(id) {
   const cb = el("button", "Save"); cb.onclick = () => ci.value.trim() && post(id, "canvas", { block: cs.value, text: ci.value }).catch(e => alert(e.message)); cr.append(cs, ci, cb); w.append(cr);
   w.append(el("b", "Milestones"));
   p.milestones.forEach((m, i) => {
-    const row = el("div", (m.done ? "✔ " : "○ ") + m.text, "m");
+    const late = !m.done && m.due && new Date(m.due + "T23:59:59") < new Date();
+    const row = el("div", (m.done ? "✔ " : (late ? "LATE " : "○ ")) + m.text
+      + (m.due ? "  (due " + m.due + ")" : ""), late ? "m warn" : "m");
     if (!m.done) { const b = el("button", "Done"); b.onclick = () => post(id, "complete", { index: i + 1 }).catch(e => alert(e.message)); row.append(b); }
     w.append(row);
   });
-  const mr = el("div", null, "row m"), mi = document.createElement("input"), mb = el("button", "Add"); mi.placeholder = "next milestone…";
-  mb.onclick = () => mi.value.trim() && post(id, "milestone", { text: mi.value }).catch(e => alert(e.message)); mr.append(mi, mb); w.append(mr);
+  const mr = el("div", null, "row m"), mi = document.createElement("input"), mb = el("button", "Add");
+  const md = document.createElement("input"); md.type = "date"; md.title = "due day (optional)";
+  mi.placeholder = "next milestone…";
+  mb.onclick = () => mi.value.trim() && post(id, "milestone", { text: mi.value, due: md.value }).catch(e => alert(e.message));
+  mr.append(mi, md, mb); w.append(mr);
+  // the interview: one question, one box, no block names to learn
+  try {
+    const q = await api("/v1/projects/" + encodeURIComponent(id) + "/interview", {});
+    const qq = q.question;
+    if (qq && !qq.done) {
+      w.append(el("b", "Question " + (qq.filled + 1) + " of " + qq.total + ": " + qq.label));
+      const ar = el("div", null, "row m"), ai = document.createElement("input"), ab = el("button", "Answer");
+      ai.placeholder = qq.question;
+      ab.onclick = () => ai.value.trim() && post(id, "canvas", { block: qq.block, text: ai.value }).catch(e => alert(e.message));
+      ar.append(ai, ab); w.append(ar);
+    }
+  } catch (e) { /* the block editor below still works */ }
+  const ex = el("button", null, "Export summary (.txt)"); ex.className = "m";
+  ex.onclick = async () => {
+    try {
+      const r = await api("/v1/projects/" + encodeURIComponent(id) + "/export", {});
+      alert("Written to " + r.file.path);
+    } catch (e) { alert(e.message); }
+  };
+  w.append(ex);
   w.append(el("b", "Notes"));
   p.notes.slice(-5).forEach(n => w.append(el("div", new Date(n.ts).toLocaleDateString() + ": " + n.text, "m mu")));
   const nr = el("div", null, "row m"), ni = document.createElement("input"), nb = el("button", "Add"); ni.placeholder = "progress note…";

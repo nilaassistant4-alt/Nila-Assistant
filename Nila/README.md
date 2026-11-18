@@ -48,6 +48,14 @@ Every command that needs the vault will prompt for your passphrase. For scripts,
 use `--passphrase-env VAR` and put the passphrase in that variable — but see
 "Passphrase handling" below before relying on it.
 
+The unlock flags (`--passphrase-env`, `--totp`, `--recovery`) work on **every**
+subcommand and in **either** position: before the command, or after it.
+
+```bash
+python3 brain.py --passphrase-env PW --totp 123456 progress
+python3 brain.py progress --passphrase-env PW --totp 123456
+```
+
 If `init` is slow, add the global `--fast-kdf` flag *before* the subcommand:
 
 ```bash
@@ -613,3 +621,50 @@ means the code is here and is waiting on an install or a key - the row says whic
 carries the dotted path of the code that must exist for it to count, so the table
 cannot claim a feature the installation does not have. The same numbers are on the
 dashboard, refreshed every 15 seconds.
+
+## Your business work (v0.2, stage 10)
+
+One question at a time, so nothing has to be typed twice:
+
+    brain project list                      # what is open, and what is LATE
+    brain project new "Tea shop" - a stall near the bus stand
+    brain project ask "Tea shop"            # the next single question
+    brain project answer "Tea shop" students walking to the bus stand
+    brain project milestone "Tea shop" buy the stove --due 2026-12-01
+    brain project done "Tea shop" 1
+    brain project late                      # unfinished, past its day, everywhere
+    brain project weekly                    # what moved, what slipped - only when asked
+    brain project export "Tea shop" --folder D:/Notes
+
+Milestones take the day you would actually type (`2026-12-01`, `01/12/2026`,
+`1 Dec 2026`, `today`, `tomorrow`). A milestone without a day is still a
+milestone; it just never shows as late. Nothing is guessed: `next week` is
+refused with a message instead of becoming some date.
+
+The dashboard shows the same numbers, with late milestones at the top, and has
+the interview as one box - the next question and an answer field.
+
+## Install it as an app, and move it to D:
+
+`brain serve` now serves a web manifest and an icon, so Chrome offers
+**Install as app** (taskbar icon, own window) without any extra program.
+
+Two Windows helpers, both safe by construction:
+
+- **`move-to-d.bat`** - copies your vault to another drive, compares every file
+  by SHA-256, and only then switches `BRAIN_HOME`. It refuses while Nila is
+  running, refuses to merge two data folders, and keeps the old folder as
+  `vault-old` until *you* delete it.
+- **`backup-to-d.bat`** - writes a dated backup, then restores it into a
+  temporary folder and compares record counts. A backup that has not been
+  restored is a guess, so a mismatch is reported as **BACKUP FAILED**. It
+  refuses a Google Drive / OneDrive / Dropbox folder on purpose.
+
+Neither script deletes anything.
+
+**`install-local-ai.bat`** installs a local AI - Ollama, then `llama3.2:3b` (about
+2 GB, fits a 4 GB GPU) - and then *asks the model a question* before calling it a
+success. It separates the three states honestly: no Ollama, Ollama with no model,
+ready. If `winget` is missing or its package id is wrong on your Windows, it sends
+you to the official download page instead of inventing a command. Nila works
+without it; she answers from her own rules and says so.

@@ -297,11 +297,23 @@ def m2_panic_latch_remains_owner_controlled():
 
 
 def m2_tool_errors_do_not_silently_continue():
-    """A tool exception must surface to the owner, not be swallowed."""
+    """A tool exception must surface to the owner, not be swallowed.
+
+    The old check was a text match: it failed if the FILE contained
+    ``except Exception:\n            pass`` **anywhere**. Two such blocks exist,
+    and neither is on the tool path - one remembers that strict mode asked a
+    question, the other adds a label to a reply. A probe that goes red for
+    something the failing code does not touch is noise, and noise is how a real
+    red mark gets ignored. So the check now looks at the tool loop itself: an
+    exception there must produce a visible error AND, when halt-on-anomaly is
+    on, stop the turn.
+    """
     src = (ROOT / "brain/agent/agent.py").read_text()
-    surfaces = bool(re.search(r"integration_error|tool_error|error=", src))
-    swallowed = src.count("except Exception:\n            pass")
-    if surfaces and swallowed == 0:
+    loop = src[src.find("self.registry.call(name, args, self.tool_ctx)"):][:1200]
+    surfaces = ("result = {\"ok\": False, \"error\"" in loop
+                and "halt_reason" in loop)
+    swallowed_here = "except Exception:\n                    pass" in loop
+    if surfaces and not swallowed_here:
         record(PASS, "tool errors are surfaced, not swallowed",
                "errors are recorded on the Turn and audited")
     else:

@@ -1,0 +1,19 @@
+{
+  "name": "Nila",
+  "short_name": "Nila",
+  "id": "/",
+  "description": "A private assistant that runs on your own PC.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0e1626",
+  "theme_color": "#12305c",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

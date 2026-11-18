@@ -71,12 +71,28 @@ def register(reg: Any) -> None:
         return _guard(lambda st, project, block, text: {"project": st.set_canvas(project, block, text)})(
             ctx, project=project, block=block, text=text)
 
-    @reg.tool(name="project_milestone", description="Add a milestone to a project.",
+    @reg.tool(name="project_milestone",
+              description="Add a milestone to a project, optionally with the day it is due (YYYY-MM-DD).",
               parameters={"type": "object", "properties": {
-                  "project": {"type": "string"}, "text": {"type": "string"}},
+                  "project": {"type": "string"}, "text": {"type": "string"},
+                  "due": {"type": "string"}},
                   "required": ["project", "text"]}, risk="low", tags=["projects", "memory"])
-    def project_milestone(ctx, project: str, text: str) -> Dict[str, Any]:
-        return _guard(lambda st, project, text: {"project": st.add_milestone(project, text)})(ctx, project=project, text=text)
+    def project_milestone(ctx, project: str, text: str, due: str = "") -> Dict[str, Any]:
+        return _guard(lambda st, project, text, due: {"project": st.add_milestone(project, text, due)})(
+            ctx, project=project, text=text, due=due)
+
+    @reg.tool(name="project_late",
+              description="Milestones whose day has passed and are not done, across every project.",
+              parameters={"type": "object", "properties": {}}, risk="low", tags=["projects"])
+    def project_late(ctx) -> Dict[str, Any]:
+        return _guard(lambda st: {"late": st.late_milestones()})(ctx)
+
+    @reg.tool(name="project_next_question",
+              description="The next single question of the business-model interview for a project.",
+              parameters={"type": "object", "properties": {"project": {"type": "string"}},
+                          "required": ["project"]}, risk="low", tags=["projects"])
+    def project_next_question(ctx, project: str) -> Dict[str, Any]:
+        return _guard(lambda st, project: {"question": st.interview(project)})(ctx, project=project)
 
     @reg.tool(name="project_set_status",
               description="Set a project's status: " + ", ".join(STATUSES) + ".",

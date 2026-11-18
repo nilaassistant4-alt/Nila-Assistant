@@ -11,10 +11,19 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 STATIC = Path(__file__).parent / "static"
 ASSETS = {"/": ("dashboard.html", "text/html; charset=utf-8"),
           "/dashboard.css": ("dashboard.css", "text/css; charset=utf-8"),
-          "/dashboard.js": ("dashboard.js", "application/javascript; charset=utf-8")}
+          "/dashboard.js": ("dashboard.js", "application/javascript; charset=utf-8"),
+          # Chrome's "Install as app" only appears when the page links a web
+          # manifest, so without these two a taskbar icon was never offered
+          # (the confirmed v0.2 scope). A manifest is public by design: it names
+          # the app, it does not expose anything inside it.
+          "/manifest.json": ("manifest.json", "application/manifest+json"),
+          "/icon.svg": ("icon.svg", "image/svg+xml")}
 # No inline script/style anywhere, so nothing but same-origin files may run.
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
-       "img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+       "img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; "
+       # Chrome fetches the install icon under the manifest's own rules; without
+       # this the "Install as app" prompt silently does not appear.
+       "manifest-src 'self'; icon-src 'self'")
 # Phase 4 (browser voice unlock) must change microphone=() to microphone=(self).
 PERMISSIONS = "microphone=(), camera=(), geolocation=(), payment=()"
 DEFAULT_ROOTS = ("~/Documents", "~/Downloads", "~/Pictures")

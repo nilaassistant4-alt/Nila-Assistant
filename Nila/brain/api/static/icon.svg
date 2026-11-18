@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
+<rect width="192" height="192" rx="40" fill="#12305c"/>
+<circle cx="96" cy="86" r="42" fill="none" stroke="#f2c14e" stroke-width="10"/>
+<circle cx="80" cy="80" r="6" fill="#f2c14e"/><circle cx="112" cy="80" r="6" fill="#f2c14e"/>
+<path d="M74 104q22 18 44 0" stroke="#f2c14e" stroke-width="8" fill="none" stroke-linecap="round"/>
+<text x="96" y="164" font-family="system-ui,sans-serif" font-size="26" fill="#e8eefc" text-anchor="middle">Nila</text>
+</svg>

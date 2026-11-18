@@ -209,6 +209,11 @@ class Gateway:
                                                                   str(body.get("idea", "")))}
             elif parts == ["resume"] and method == "GET":
                 return 200, {"ok": True, "resume": st.resume()}
+            elif parts == ["late"] and method == "GET":
+                # late milestones first: the owner asked for these to be put in
+                # front of him, not found by scrolling
+                late = st.late_milestones()
+                return 200, {"ok": True, "late": late, "count": len(late)}
             else:
                 ref = parts[0]
                 action = parts[1] if len(parts) > 1 else ""
@@ -223,7 +228,14 @@ class Gateway:
                         return 200, {"ok": True, "project": st.set_canvas(
                             ref, str(body.get("block", "")), str(body.get("text", "")))}
                     if action == "milestone":
-                        return 200, {"ok": True, "project": st.add_milestone(ref, str(body.get("text", "")))}
+                        return 200, {"ok": True, "project": st.add_milestone(
+                            ref, str(body.get("text", "")), str(body.get("due", "")))}
+                    if action == "interview":
+                        return 200, {"ok": True, "question": st.interview(ref)}
+                    if action == "export":
+                        self.vault.audit("project_exported", {"project": ref[:40]})
+                        return 200, {"ok": True, "file": st.export_summary(
+                            ref, str(body.get("folder", "")))}
                     if action == "complete":
                         return 200, {"ok": True, "project": st.complete_milestone(
                             ref, int(body.get("index", 0)))}
