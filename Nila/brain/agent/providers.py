@@ -220,6 +220,9 @@ class GeminiProvider(LLMProvider):
         self.temperature = temperature
         self.timeout = timeout
         self.max_output_tokens = max_output_tokens
+        #: Filled in by `pick_model`; empty means "not asked / could not ask".
+        self.models_seen: List[str] = []
+        self.models_guessed = False
 
     def base_url_ok(self) -> bool:
         from urllib.parse import urlparse
@@ -230,11 +233,85 @@ class GeminiProvider(LLMProvider):
     def available(self) -> bool:
         return bool(self.api_key) and self.base_url_ok()
 
+    def list_models(self, timeout: float = 8.0) -> List[str]:
+        """The model names this key may use, asked of the API, not guessed.
+
+        Returns bare names (``gemini-2.5-flash``); any ``models/`` prefix the API
+        uses is stripped so a name can go straight into the request path. An
+        unreachable API yields an empty list, and the caller then says so rather
+        than guessing again.
+        """
+        if not self.base_url_ok() or not self.api_key:
+            return []
+        req = urllib.request.Request(f"{self.base_url}/models?pageSize=200",
+                                     method="GET")
+        req.add_header("x-goog-api-key", self.api_key)
+        try:
+            with open_once(req, timeout=timeout) as resp:
+                raw = json.loads(resp.read().decode() or "{}")
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError):
+            return []
+        names: List[str] = []
+        for row in raw.get("models") or []:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "").split("/")[-1].strip()
+            if not name:
+                continue
+            methods = row.get("supportedGenerationMethods") or []
+            if methods and "generateContent" not in methods:
+                continue                      # embeddings-only, not a chat model
+            if "embedding" in name.lower() or "aqa" in name.lower():
+                continue                      # not a chat model by name either
+            names.append(name)
+        return names
+
+    def pick_model(self, candidates: Optional[List[str]] = None) -> str:
+        """The best model this key can actually use, or the configured one.
+
+        Order: the configured model if the API lists it, then the preferred
+        list, then the first listed chat model. If the API cannot be reached the
+        configured name is returned unchanged - the honest fallback, and the
+        reason the error message is not a guess.
+        """
+        listed = self.list_models()
+        self.models_seen = listed
+        if not listed:
+            return self.model                     # cannot ask: keep the setting
+        for want in [self.model, *(candidates or GEMINI_PREFERRED)]:
+            if want and want in listed:
+                return want
+        for want in (candidates or GEMINI_PREFERRED):
+            if want in listed:
+                return want
+        return listed[0]
+
     def complete(self, system: str, messages: List[Dict[str, str]],
                  tools: Optional[List[Dict[str, Any]]] = None,
                  tools_mode: str = "auto") -> Completion:
         if not self.base_url_ok():
             raise ProviderError("refusing to send the Gemini key to an unexpected address")
+        # A 404 on the model name is a naming problem, not a request problem, so
+        # it is handled here once: ask what exists, retry with a real name, and
+        # if even that fails say which names were offered.
+        try:
+            return self._complete_once(system, messages, tools)
+        except ProviderError as exc:
+            if getattr(exc, "status", None) != 404:
+                raise
+            wanted = self.model
+            better = self.pick_model()
+            if not better or better == wanted:
+                raise ProviderError(
+                    "Gemini does not offer the model "
+                    f"'{wanted}' for this key. Available: "
+                    + (", ".join(self.models_seen[:8]) or "the list could not be read")
+                ) from exc
+            self.model = better
+            return self._complete_once(system, messages, tools)
+
+    def _complete_once(self, system: str, messages: List[Dict[str, str]],
+                       tools: Optional[List[Dict[str, Any]]]) -> Completion:
         sys_text = system + ("\n\n" + _tool_prompt(tools) if tools else "")
         contents = [{"role": "user" if m.get("role") == "user" else "model",
                      "parts": [{"text": m.get("content", "")}]} for m in messages]
@@ -261,6 +338,16 @@ class GeminiProvider(LLMProvider):
                           usage={"total_tokens": meta.get("totalTokenCount", 0),
                                  "prompt_tokens": meta.get("promptTokenCount", 0)},
                           provider=self.name)
+
+
+#: Gemini model names change between accounts and regions ("gemini-flash-latest"
+#: works for some keys and 404s for others). Guessing a name was the bug; asking
+#: the API which models the key can actually use is the fix. The list is fetched
+#: once per provider instance and cached, so a normal turn pays nothing.
+GEMINI_PREFERRED = (
+    "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash",
+    "gemini-1.5-flash", "gemini-1.5-flash-latest",
+)
 
 
 class OllamaProvider(LLMProvider):

@@ -180,8 +180,12 @@ class ToolRegistry:
                         "needs_affirmation": True,
                         "how_to_affirm": (f"brain permission affirm {decision.prompt_id}"
                                           if decision.prompt_id else ""),
-                        "how_to_grant": f"brain permission grant {spec.capability} "
-                                        f"--scope {scope} --purpose '<why>'"}
+                        # The scope is a path, and a path has spaces on Windows
+                        # ("D:/Nila Assistant Storage/..."). An unquoted hint
+                        # pasted into a terminal becomes three arguments and the
+                        # grant silently fails, so it is quoted here.
+                        "how_to_grant": (f'brain permission grant {spec.capability} '
+                                         f'--scope "{scope}" --purpose "<why>"')}
 
         # ONE re-auth, ONE high-risk action - consumed here, at the point the
         # call is certain to execute. Consuming it earlier threw the grant away

@@ -300,7 +300,10 @@ def describe(rec: Any, now_ms: int) -> str:
     done = bool(meta.get("done"))
     cancelled = bool(meta.get("cancelled"))
     at = _as_dt(at_ms)
-    stamp = at.strftime("%a %d %b, %H:%M")
+    # A wait measured in seconds gets seconds on the clock too: "remind me in 30
+    # seconds" shown as the current minute reads as if it had already fired.
+    stamp = at.strftime("%a %d %b, %H:%M:%S") if abs(at_ms - now_ms) < 120000 \
+        else at.strftime("%a %d %b, %H:%M")
     tail = ""
     if repeat:
         tail = f"  (repeats {repeat})"
@@ -309,16 +312,30 @@ def describe(rec: Any, now_ms: int) -> str:
     elif done:
         status = "done"
     elif at_ms <= now_ms:
-        late = int((now_ms - at_ms) / 60000)
-        status = f"MISSED {late} min ago" if late < 1440 else "MISSED earlier"
-    else:
-        left = int((at_ms - now_ms) / 60000)
-        if left < 60:
-            status = f"in {left} min"
-        elif left < 60 * 24:
-            status = f"in {round(left / 60)} h"
+        late = int(round((now_ms - at_ms) / 60000.0))
+        if late < 1:
+            status = "MISSED just now"
+        elif late < 1440:
+            status = f"MISSED {late} min ago"
         else:
-            status = f"in {round(left / 1440)} days"
+            status = "MISSED earlier"
+    else:
+        # Found in stage 8: a reminder set for 90 minutes away said "[in 0 min]"
+        # because the leftover milliseconds were truncated, and a reminder three
+        # seconds away was made funnier by "0 min" too. Sub-two-minute waits are
+        # now counted in seconds, and the rest are rounded, never truncated.
+        left_ms = at_ms - now_ms
+        left_s = int(round(left_ms / 1000.0))
+        if left_s < 120:
+            status = f"in {max(1, left_s)} s"
+        else:
+            left = int(round(left_ms / 60000.0))
+            if left < 60:
+                status = f"in {left} min"
+            elif left < 60 * 24:
+                status = f"in {max(1, int(round(left / 60.0)))} h"
+            else:
+                status = f"in {max(1, int(round(left / 1440.0)))} days"
     return f"  {rec.id}  {stamp}{tail}  -  {rec.title}   [{status}]"
 
 

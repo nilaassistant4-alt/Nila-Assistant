@@ -531,3 +531,30 @@ A spoken sentence is matched against a small verb list before anything runs:
 "Nila open notepad", "Nila find invoice", "Nila read D:/bill.pdf", "Nila stop",
 in English or Tamil. A sentence that does not match is answered with "I do not
 know how to ..." - never guessed into an action.
+
+## The small problems, and the ones that were real bugs (v0.2, stage 8)
+
+Found by using the product, not by reading it. Each one is written here as the
+behaviour that was wrong, because that is what will be checked again.
+
+| What was wrong | What happens now |
+|---|---|
+| A reminder 90 minutes away said `[in 0 min]` | minutes are rounded, not truncated: `[in 2 h]`, `[in 45 min]` |
+| A reminder seconds away showed a clock with no seconds | `[in 3 s]`, and the clock shows `%H:%M:%S` inside two minutes |
+| A reminder that just came due said `MISSED 0 min ago` | `MISSED just now` |
+| Nothing announced a reminder that came due while Nila was closed | `brain start` says it before opening the app; the **Nila Reminders** icon checks it (`brain remind --due --say`); the dashboard polls `/v1/reminders/due` every 2 s and shows a **Due now** box with a Done button |
+| "Nila remind me in 10 minutes to drink water" was refused by the icon | it is a spoken action now, parsed by code, no model |
+| A Gemini model name this key does not have failed with a raw 404 | the list is read from `/models` (chat models only), the configured name is kept if it exists, and a 404 is repaired once with a real name |
+| "Three months of memory, then let it go" did not exist | `brain memory --older-than 90` reports; `--purge --yes` deletes. Reminders, credentials, instructions and anything marked important are never purged, and nothing is scheduled |
+| The refusal hint `--scope C:/path with spaces` could not be pasted | the scope is quoted in the hint |
+
+Re-testing the whole product from a fresh vault:
+
+    python scripts/retest_everything.py        # writes NILA_RETEST_RESULTS.md
+
+It drives the vault, memory, reminders, the calculator, a full agent turn, the
+voice lock (owner, stranger, restart, replay), files, video, search, apps,
+connectors, retention, the icons, the tool registry and its permission gate, the
+local API, the dashboard, language reading and the ZIP - and says `SKIP` with the
+exact missing piece for anything that needs a microphone, a voice, a model key or
+the network. A `SKIP` is not a pass.

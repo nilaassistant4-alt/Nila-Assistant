@@ -861,6 +861,46 @@ def cmd_remember(args, ui: UI) -> int:
     return 0
 
 
+def cmd_memory(args, ui: UI) -> int:
+    """What is old enough to let go - a report, and a purge only when asked."""
+    from ..memory import retention
+
+    config, vault = open_vault(args)
+    memory = open_memory(config, vault)
+    try:
+        if args.purge:
+            out = retention.purge(memory, days=args.older_than, apply=bool(args.yes))
+            if out.get("purged"):
+                vault.audit("memory_purge", {"count": out["purged"],
+                                             "window_days": out["window_days"]})
+        else:
+            out = retention.report(memory, days=args.older_than)
+    except retention.RetentionError as exc:
+        ui.err(str(exc))
+        memory.close()
+        vault.lock()
+        return 2
+    try:
+        if args.json:
+            ui.emit(out)
+        else:
+            print(out["line"])
+            for row in out["older_records"]:
+                print(f"  {row['age_days']:>6.0f} d  {row['kind']:<14s} {row['title'][:50]}")
+            if out["protected_records"]:
+                print(f"\n{out['protected']} kept on purpose:")
+                for row in out["protected_records"][:10]:
+                    print(f"  {row['kind']:<14s} {row['title'][:50]}")
+            print("\n" + out["note"])
+            if not args.purge:
+                print("To really delete them: `brain memory --older-than "
+                      f"{out['window_days']} --purge --yes`")
+        return 0
+    finally:
+        memory.close()
+        vault.lock()
+
+
 def cmd_recall(args, ui: UI) -> int:
     config, vault = open_vault(args)
     warn_if_single_factor(ui, vault)
@@ -1693,6 +1733,55 @@ def cmd_ears(args, ui: UI) -> int:
     return 0 if text else 1
 
 
+def _clock(at_ms: int) -> str:
+    import datetime as _dt
+
+    return _dt.datetime.fromtimestamp(int(at_ms) / 1000).strftime("%a %d %b, %H:%M")
+
+
+def _talk_brain(config: Any, vault: Any, memory: Any) -> Any:
+    """A Brain for the reminder book alone - no provider, so nothing is called."""
+    from ..agent.agent import Brain
+
+    return Brain(config, vault, memory, provider=_NoProvider())
+
+
+class _NoProvider:
+    """Stands in for a model in code paths that must never reach one."""
+
+    name = "none"
+    needs_network = False
+
+    def available(self) -> bool:
+        return False
+
+    def complete(self, *a, **k):           # pragma: no cover - never reached
+        raise RuntimeError("this path must not ask a model anything")
+
+
+def _due_alerts(brain: Any, spoken: bool = False, voice: str = "") -> List[Dict[str, Any]]:
+    """Reminders that came due while Nila was closed, and say them.
+
+    They are consumed (closed) so the same one is not announced twice, and each
+    line says how late it is. This is called by the icon paths, which are the only
+    ones that run without the owner already looking at Nila.
+    """
+    try:
+        rows = brain.due_reminders(consume=True)
+    except Exception:                      # a broken record must not block the action
+        return []
+    for row in rows:
+        late = int(row.get("late_minutes") or 0)
+        when = "now" if late < 1 else f"{late} min late"
+        line = f"Reminder ({when}): {row.get('title', '')}"
+        print(line, flush=True)
+        if spoken:
+            from ..util import speech
+
+            speech.speak_text(line, voice=voice)
+    return rows
+
+
 def cmd_talk(args, ui: UI) -> int:
     """One press of an icon: listen once, check the voice, act, answer aloud.
 
@@ -1757,6 +1846,11 @@ def cmd_talk(args, ui: UI) -> int:
                 return 3
 
         # ---- 3. what was asked? -------------------------------------------- #
+        # Reminders that came due while this icon was closed are announced first,
+        # because they are the reason the owner pressed it.
+        _due_alerts(_talk_brain(config, vault, memory),
+                    spoken=not args.no_speak, voice=args.speak_voice or "")
+
         spoken = launchmod.spoken_action(said)
         action, argument = spoken.get("action", ""), spoken.get("argument", "")
         result: Dict[str, Any] = {"ok": True, "heard": said, "action": action,
@@ -1800,6 +1894,20 @@ def cmd_talk(args, ui: UI) -> int:
                 result["file"] = {k: v for k, v in report.items() if k != "text"}
                 answer(str(report.get("summary") or report.get("rendered")
                            or f"{target.name} read."))
+        elif action == "remind":
+            from .reminders import ReminderError, parse_when
+
+            phrase = argument
+            try:
+                when = parse_when(phrase)
+                rec = _talk_brain(config, vault, memory).reminder_book().add(
+                    phrase, when, original=said)
+                result["reminder"] = {"id": rec.id, "title": rec.title,
+                                      "at_ms": when.at_ms}
+                answer(f"Reminder set for {_clock(when.at_ms)}: {rec.title}")
+            except ReminderError as exc:
+                result["ok"] = False
+                answer(f"I could not set that reminder: {exc}")
         elif action == "stop":
             answer("Stopping. Nothing else is done.")
         else:
@@ -1972,6 +2080,13 @@ def cmd_start(args, ui: UI) -> int:
     memory = open_memory(config, vault)
     from ..api.gateway import serve
 
+    # Anything that came due while Nila was closed is said *now*, before the app
+    # is open, because after this the owner is looking at a window and not at the
+    # terminal the icon started.
+    try:
+        _due_alerts(_talk_brain(config, vault, memory), spoken=False)
+    except Exception:
+        pass
     return serve(config, vault, memory, host=args.host, port=args.port,
                  token=args.token, open_browser=not args.no_browser,
                  show_token=bool(args.show_token))
@@ -2060,6 +2175,18 @@ def cmd_remind(args, ui: UI) -> int:
     config, vault = open_vault(args)
     memory = open_memory(config, vault)
     book = ReminderBook(memory)
+    if getattr(args, "due", False):
+        # The honest answer to "did anything fire while I was away?": each one is
+        # shown with how late it is, and closed, so it is not announced twice.
+        rows = _due_alerts(_talk_brain(config, vault, memory),
+                           spoken=bool(getattr(args, "say", False)))
+        if args.json:
+            ui.emit({"ok": True, "due": rows})
+        elif not rows:
+            print("Nothing is due.")
+        memory.close()
+        vault.lock()
+        return 0
     action = (args.action or "list").lower()
     words = list(args.text or [])
     if action not in ("add", "list", "ls", "done", "snooze", "cancel"):
@@ -2646,6 +2773,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("text", nargs="*", help="e.g. 'in 10 minutes to drink water'")
     sp.add_argument("--id", help="reminder id or its number in the list")
     sp.add_argument("--minutes", type=float, default=10, help="for snooze")
+    sp.add_argument("--due", action="store_true",
+                    help="show what came due while Nila was closed, then close it")
+    sp.add_argument("--say", action="store_true", help="with --due: speak it aloud too")
     add_auth(sp)
     sp.set_defaults(func=cmd_remind)
 
@@ -2722,6 +2852,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--title", default="")
     add_auth(sp)
     sp.set_defaults(func=cmd_remember)
+
+    sp = sub.add_parser("memory", help="what is old enough to let go (report, or --purge)")
+    sp.add_argument("--older-than", type=int, default=90, metavar="DAYS",
+                    help="the window, in days (default 90 = about 3 months)")
+    sp.add_argument("--purge", action="store_true", help="delete, don't just list")
+    sp.add_argument("--yes", action="store_true", help="confirm the deletion")
+    add_auth(sp)
+    sp.set_defaults(func=cmd_memory)
 
     sp = sub.add_parser("recall", help="hybrid search over memory")
     sp.add_argument("query", nargs="+")

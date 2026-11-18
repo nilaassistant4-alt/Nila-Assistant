@@ -390,6 +390,19 @@ async function tick() {
         (e.event || "event") + (why ? " · " + why : "")));
     });
     if (s.unlocked) {
+      // A reminder that came due is the one thing that must not wait for a
+      // question: it is checked on every tick. `consume=false` only reports, so
+      // the record is closed when the owner presses Done, not by a poll.
+      try {
+        const due = await api("/v1/reminders/due");
+        const db = $("due");
+        if (db) db.replaceChildren(...(due.due || []).map(r => {
+          const d = el("div", "\u23f0 " + r.title + (r.late_minutes ? " \u00b7 " + r.late_minutes + " min late" : "") + " ", "bad");
+          const b = el("button", "Done");
+          b.onclick = () => api("/v1/reminders/close", { id: r.id }).then(tick).catch(e => alert(e.message));
+          d.append(b); return d;
+        }));
+      } catch (e) { /* the next tick tries again */ }
       const c = await api("/v1/consent"), cs = $("cs"); cs.replaceChildren();
       if (!c.pending.length) cs.textContent = "none";
       c.pending.forEach(p => {

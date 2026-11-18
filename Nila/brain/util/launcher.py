@@ -137,7 +137,8 @@ def windows_shortcut_help(target_vbs: Path) -> str:
 def linux_desktop(python: str, script: str, home: str = "",
                   extra_args: Optional[List[str]] = None,
                   name: str = "Nila",
-                  comment: str = "Start Nila (unlock, then open the app)") -> str:
+                  comment: str = "Start Nila (unlock, then open the app)",
+                  terminal: bool = True) -> str:
     args = [python, script, *(["start"] if not extra_args else extra_args)]
     if home:
         args += ["--home", home]
@@ -147,7 +148,7 @@ def linux_desktop(python: str, script: str, home: str = "",
             f"Name={name}\n"
             f"Comment={comment}\n"
             f"Exec={quoted}\n"
-            "Terminal=true\n"
+            f"Terminal={'true' if terminal else 'false'}\n"
             "Categories=Utility;\n")
 
 
@@ -220,7 +221,14 @@ def push_to_talk_launchers(home: Path, out_dir: Optional[Path] = None,
 
 
 def write_launchers(home: Path, out_dir: Optional[Path] = None) -> Dict[str, Any]:
-    """Write the files for this platform and say where they are."""
+    """Write the files for this platform and say where they are.
+
+    Two icons are written, not one: the app, and a *reminder check* (`--due`)
+    that runs in a few seconds and closes. That second icon is the honest answer
+    to "a reminder that fires while Nila is closed" - nothing can wake a program
+    that is not running, so the check runs when the owner does start something,
+    says what was missed and how late, and the app itself does the same on start.
+    """
     system = platform.system().lower()
     py = sys.executable or "python"
     script = str(Path(home) / "brain.py")
@@ -232,6 +240,7 @@ def write_launchers(home: Path, out_dir: Optional[Path] = None) -> Dict[str, Any
         target.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise LauncherError(f"could not write to {target}: {exc}") from exc
+    due_args = ["remind", "--due", "--say"] if script == "-m brain" else ["remind", "--due"]
     if system.startswith("win"):
         vbs = target / "Nila.vbs"
         vbs.write_text(windows_vbs(py, script, str(home)), encoding="utf-8")
@@ -239,6 +248,10 @@ def write_launchers(home: Path, out_dir: Optional[Path] = None) -> Dict[str, Any
         bath = target / "Nila.bat"
         bath.write_text(f'@echo off\r\n"{py}" "{script}" start\r\n', encoding="utf-8")
         written.append(str(bath))
+        due = target / "Nila Reminders.vbs"
+        due.write_text(windows_vbs(py, script, str(home), extra_args=due_args),
+                       encoding="utf-8")
+        written.append(str(due))
         note = windows_shortcut_help(vbs)
     elif system == "darwin":
         sh = target / "Nila.command"
@@ -251,6 +264,12 @@ def write_launchers(home: Path, out_dir: Optional[Path] = None) -> Dict[str, Any
         desktop.write_text(linux_desktop(py, script, str(home)))
         os.chmod(desktop, 0o755)
         written.append(str(desktop))
+        due = target / "nila-reminders.desktop"
+        due.write_text(linux_desktop(
+            py, script, str(home), extra_args=due_args, name="Nila Reminders",
+            comment="What came due while Nila was closed"))
+        os.chmod(due, 0o755)
+        written.append(str(due))
         note = ("Double-click it, or copy it to ~/.local/share/applications/ to "
                 "find Nila in the application menu.")
     return {"ok": True, "written": written, "note": note,
