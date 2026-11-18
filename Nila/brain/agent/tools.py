@@ -383,6 +383,49 @@ def build_default_registry() -> ToolRegistry:
             raise ToolError(f"cannot evaluate: {exc}") from exc
         return {"ok": True, "expression": expr, "result": value}
 
+    # -- calendar, read-only (stage 3) --------------------------------- #
+    @reg.tool(
+        name="calendar",
+        description="Read the owner's calendar (an .ics file or a secret iCal "
+                    "address) for a day range. Read-only: creating an event needs "
+                    "OAuth, which this tool does not do.",
+        parameters={"type": "object", "properties": {
+            "when": {"type": "string",
+                     "description": "today | tomorrow | week | a weekday | a date"}}},
+        risk="low", tags=["calendar", "offline"],
+    )
+    def calendar(ctx: ToolContext, when: str = "today") -> Dict[str, Any]:
+        from ..util import ics
+
+        source = str((ctx.config.agent or {}).get("calendar_ics") or "")
+        if not source:
+            return {"ok": False, "error": "no calendar set",
+                    "how": "run `brain calendar --set <path-or-ics-url>`"}
+        allow = bool((ctx.config.agent or {}).get("calendar_allow_network", False))
+        got = ics.load(source, allow_network=allow)
+        if not got.get("ok"):
+            return got
+        start, end, label = ics.range_from_text(when or "today")
+        data = ics.between(got["text"], start, end)
+        data["label"] = label
+        data["rendered"] = ics.render(data, label)
+        data["source"] = got.get("source", "")
+        return data
+
+    @reg.tool(
+        name="speak",
+        description="Say something out loud on this device (SAPI on Windows, Piper "
+                    "if a voice file is installed). Reports honestly when no "
+                    "speech engine exists.",
+        parameters={"type": "object", "properties": {
+            "text": {"type": "string"}}},
+        risk="low", tags=["voice", "offline"],
+    )
+    def speak(ctx: ToolContext, text: str = "") -> Dict[str, Any]:
+        from ..util import speech
+
+        return speech.speak_text(text)
+
     # -- reminders (stage 2) ------------------------------------------- #
     # Rendered by code, never by a model: the owner's own sentence is what the
     # reminder says. No network, no capability, no new storage - a reminder is a

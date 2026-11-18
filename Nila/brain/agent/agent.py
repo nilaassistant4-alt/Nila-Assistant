@@ -215,6 +215,98 @@ class Brain:
     def _audit(self, event: str, data: Dict[str, Any]) -> None:
         self.vault.audit(event, data)
 
+    # -- calendar (stage 3) --------------------------------------------- #
+    def calendar_source(self) -> str:
+        return str((self.config.agent or {}).get("calendar_ics") or "")
+
+    def ask_calendar(self, text: str, started: int) -> Optional[Turn]:
+        """Answer "what is on tomorrow?" from the .ics, with no model involved."""
+        from ..util import ics
+
+        from ..util import ics as _ics
+
+        low = " ".join(text.lower().split())
+        # Only a DAY word counts here. "what is on the news" has the phrase but no
+        # day, so it stays an ordinary question instead of becoming a calendar
+        # lookup with a guessed date.
+        asks_when = re.search(r"\b(today|tomorrow|this week|next week|this month|monday|"
+                              r"tuesday|wednesday|thursday|friday|saturday|sunday)\b|"
+                              r"இன்று|இன்னைக்கு|நாளை|நாளைக்கு|இந்த வாரம்|"
+                              r"அடுத்த வாரம்|திங்கள்|செவ்வாய்|புதன்|வியாழன்|வெள்ளி|"
+                              r"சனி|ஞாயிறு", low)
+        # "what is on tomorrow?" is about the calendar on its own; a day word
+        # alone ("what is the time today") is not.
+        plural = re.search(r"\b(meetings?|appointments?|events?|schedules?)\b|"
+                           r"கூட்டம்|நிகழ்ச்சி|அப்பாயின்ட்மென்ட்|மீட்டிங்", low)
+        wants = (asks_when and (
+            re.search(r"\b(calendar|busy|agenda)\b", low)
+            or re.search(r"what'?s on|what is on|என்ன இருக்க", low))
+        ) or (plural and re.search(
+            r"\b(today|tomorrow|this week|next week|this month)\b|"
+            r"இன்று|இன்னைக்கு|நாளை|நாளைக்கு|இந்த வாரம்", low))
+        if not wants:
+            return None
+        source = self.calendar_source()
+        if not source:
+            # Nothing configured: answer only when the question is clearly about
+            # a calendar, so an ordinary "what is on the news" stays a question.
+            if not re.search(r"\b(calendar|meeting|appointment|schedule)\b|"
+                             r"காலண்டர்|அப்பாயின்ட்மென்ட்|மீட்டிங்", low):
+                return None
+            return Turn(text, "No calendar is set yet. Two ways, both read-only:\n"
+                              "  1. Google Calendar -> Settings -> your calendar -> "
+                              "'Secret address in iCal format' (no login needed)\n"
+                              "  2. an .ics file on this PC\n"
+                              "Then: `brain calendar --set <path-or-address>`",
+                        ms=now_ms() - started)
+        allow = bool((self.config.agent or {}).get("calendar_allow_network", False))
+        got = ics.load(source, allow_network=allow)
+        if not got.get("ok"):
+            return Turn(text, "⚠️ " + str(got.get("error")), ms=now_ms() - started)
+        start, end, label = ics.range_from_text(text)
+        data = ics.between(got["text"], start, end)
+        self._audit("calendar_read", {"events": data["count"], "label": label,
+                                      "source_is_url": ics.is_url(source)})
+        return Turn(text, ics.render(data, label), ms=now_ms() - started)
+
+    # -- languages (stage 3) -------------------------------------------- #
+    def _language_gate(self, text: str, started: int) -> Optional[Turn]:
+        """Read another language, then explain it in Tamil. Never speak it back.
+
+        With no model, the honest answer is the detection plus the words that are
+        known - never an invented translation. With a model that the owner has
+        allowed online, one prompt does the translation and says who did it.
+        """
+        from . import translate as tr
+
+        info = tr.detect(text)
+        if info.get("spoken"):
+            return None
+        explanation = ""
+        model_used = ""
+        plan = None
+        if self.router is not None:
+            plan = self.router.plan(text, "online")
+        if plan is not None and plan.where == "online" and not plan.blocked:
+            prompt = tr.prompt_for(text, info["language"])
+            try:
+                done = plan.provider.complete(self.system_prompt(text),
+                                              [{"role": "user", "content": prompt}])
+                explanation = (done.text or "").strip()
+                model_used = f"{plan.provider.name} ({getattr(plan.provider, 'model', '')})"
+            except Exception as exc:                 # a failed call must not lose the text
+                explanation = ""
+                model_used = ""
+                self._audit("translate_failed", {"error": str(exc)[:200]})
+        self._audit("language_read", {"language": info["language"],
+                                      "by": info["by"],
+                                      "translated": bool(explanation)})
+        answer = tr.explain(text, info, translated=explanation, model=model_used)
+        return Turn(text, answer, ms=now_ms() - started,
+                    route={"where": "online" if explanation else "offline",
+                           "label": model_used or "script detection (this device)",
+                           "notice": "", "blocked": False})
+
     # -- reminders (stage 2) -------------------------------------------- #
     def reminder_book(self) -> Any:
         from .reminders import ReminderBook
@@ -615,6 +707,12 @@ class Brain:
                                "step only. Tell me again what to do."),
                         ms=now_ms() - started)
 
+        # A message in another language is read, then explained in Tamil (or
+        # English). Speaking stays inside those two whatever came in.
+        language_turn = self._language_gate(text, started)
+        if language_turn is not None:
+            return language_turn
+
         # A reminder is answered by code, before any model: the time is parsed
         # deterministically and the owner's own sentence is stored. Putting it in
         # front of routing is what makes "remind me..." work with no model, no
@@ -622,6 +720,11 @@ class Brain:
         # Alerts first: a reminder that came due is reported on the next turn,
         # and only then is the new request handled.
         fired = self.due_reminders(consume=True)
+
+        calendar_turn = self.ask_calendar(text, started)
+        if calendar_turn is not None:
+            calendar_turn.alerts = fired
+            return calendar_turn
 
         reminder_turn = self._reminder_intent(text, started)
         if reminder_turn is not None:

@@ -509,6 +509,71 @@ class Gateway:
         # owner profile: facts, not orders (B)
         # ------------------------------------------------------------ #
         # ------------------------------------------------------------ #
+        # languages and voice (stage 3)
+        # ------------------------------------------------------------ #
+        if path == "/v1/languages" and method == "GET":
+            from ..agent import translate as tr
+            from ..util import speech
+
+            return 200, {"ok": True, "speaks": list(tr.SPOKEN),
+                         "reads": list(tr.SCRIPT_LANG.values()),
+                         "capability": tr.CAPABILITY, "voice": speech.engines()}
+        if path == "/v1/languages/detect" and method == "POST":
+            from ..agent import translate as tr
+
+            text = str(body.get("text") or "")
+            info = tr.detect(text)
+            return 200, {"ok": True, **info, "gloss": tr.gloss(text, info["language"]),
+                         "explanation": tr.explain(text, info) if not info["spoken"] else ""}
+        if path == "/v1/speak" and method == "POST":
+            from ..util import speech
+
+            text = str(body.get("text") or "").strip()
+            if not text:
+                return 400, {"ok": False, "error": "text required"}
+            return 200, speech.speak_text(text, voice=str(body.get("voice") or ""),
+                                          out_wav=body.get("wav") or None)
+
+        # ------------------------------------------------------------ #
+        # calendar, read-only (stage 3)
+        # ------------------------------------------------------------ #
+        if path == "/v1/calendar" and method == "GET":
+            from ..util import ics
+
+            source = self.brain.calendar_source()
+            if not source:
+                return 200, {"ok": True, "configured": False,
+                             "how": "brain calendar --set <path-or-ics-url>"}
+            allow = bool((self.config.agent or {}).get("calendar_allow_network", False))
+            got = ics.load(source, allow_network=allow)
+            if not got.get("ok"):
+                return 200, {"ok": True, "configured": True,
+                             "source": ics.masked_url(source), "error": got.get("error")}
+            start, end, label = ics.range_from_text(str(query.get("when") or "today"))
+            data = ics.between(got["text"], start, end)
+            return 200, {"ok": True, "configured": True, "label": label,
+                         "source": ics.masked_url(source) if ics.is_url(source) else source,
+                         **data, "rendered": ics.render(data, label)}
+        if path == "/v1/calendar" and method == "POST":
+            from ..util import ics
+
+            source = str(body.get("source") or "").strip()
+            if not source:
+                return 400, {"ok": False, "error": "source required (.ics path or address)"}
+            if ics.is_url(source) and not body.get("allow_network"):
+                return 400, {"ok": False, "needs_permission": True,
+                             "host": ics.masked_url(source),
+                             "error": "a calendar address on the internet needs allow_network: true"}
+            agent = dict(self.config.agent or {})
+            agent["calendar_ics"] = source
+            agent["calendar_allow_network"] = bool(body.get("allow_network")) and ics.is_url(source)
+            self.config.agent = agent
+            self.config.save()
+            return 200, {"ok": True,
+                         "calendar": ics.masked_url(source) if ics.is_url(source) else source,
+                         "note": "read-only; creating events needs OAuth"}
+
+        # ------------------------------------------------------------ #
         # reminders (stage 2) - offline, encrypted, rendered by code
         # ------------------------------------------------------------ #
         if path in ("/v1/reminders", "/v1/reminders/due") and method == "GET":

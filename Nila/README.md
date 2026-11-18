@@ -373,3 +373,37 @@ is printed above the next answer, with how late it is if the PC was asleep.
 
 Every answer shows its steps. The arithmetic is plain Python with no `eval`;
 amounts are rounded half-up the way a shop rounds.
+
+## Languages and voice (v0.2, stage 3)
+
+Nila **talks** in Tamil and English only. She **reads** Malayalam, Hindi, Telugu,
+Kannada, Bengali, Marathi, Gujarati, Punjabi, Urdu and Sanskrit - by script, or by
+common words when the text arrives in Latin letters - and explains what was said
+in Tamil:
+
+    brain languages                     # what she reads, what she answers in
+    brain languages "എന്റെ പേര് അനു"     # detect, with a word-by-word hint
+
+Reading another language needs a model. With Gemini configured and Online chosen,
+one prompt translates and says who translated it; with nothing configured Nila
+names the language, glosses the words she knows, and says plainly that a full
+translation needs a model. She never invents a meaning.
+
+    brain speak "வணக்கம்"               # SAPI on Windows, Piper if a voice file exists
+    brain speak --list-voices           # what Windows has installed
+    brain speak --wav out.wav "..."     # write a file instead of speaking
+
+With no engine, `spoken` is false, a place-holder WAV is written, and the reason is
+stated - a silent no is better than a confident lie.
+
+## Calendar, read-only (v0.2, stage 3)
+
+    brain calendar --set ~/calendar.ics
+    brain calendar --set "https://calendar.google.com/calendar/ical/.../basic.ics"
+    brain calendar --when tomorrow
+
+Google publishes each calendar as a *secret address in iCal format*: no login, and
+no way to write to it. Repeats (daily, weekly, by-day, monthly, count, until),
+all-day events, timezones and folded lines are handled. A calendar address is
+treated like a password - only its host is ever printed. Creating an event needs
+OAuth and is not built yet; Nila says so instead of offering a button that fails.

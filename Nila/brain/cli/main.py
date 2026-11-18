@@ -1456,6 +1456,82 @@ def cmd_issue(args, ui: UI) -> int:
             memory.close()
 
 
+def cmd_speak(args, ui: UI) -> int:
+    """Say something, or say plainly why nothing could be said."""
+    from ..util import speech
+
+    if args.list_voices:
+        voices = speech.sapi_voices()
+        if not voices:
+            ui.emit({"ok": True, "voices": [], "hint": speech.piper_install_help()})
+        else:
+            ui.emit({"ok": True, "voices": voices})
+        return 0
+    text = " ".join(args.text or [])
+    if not text:
+        ui.err("what should I say? e.g. `brain speak \"வணக்கம்\"`")
+        return 2
+    res = speech.speak_text(text, voice=args.voice or "", out_wav=args.wav)
+    ui.emit(res)
+    return 0 if res.get("spoken") else 1
+
+
+def cmd_languages(args, ui: UI) -> int:
+    """What Nila can read, what she answers in, and what that costs."""
+    from ..agent import translate as tr
+    from ..util import speech
+
+    if args.text:
+        info = tr.detect(" ".join(args.text))
+        ui.emit({"ok": True, **info, "gloss": tr.gloss(" ".join(args.text),
+                                                       info["language"])})
+        return 0
+    ui.emit({"ok": True, "speaks": list(tr.SPOKEN),
+             "reads": [v for k, v in tr.SCRIPT_LANG.items()],
+             "capability": tr.CAPABILITY,
+             "voice": speech.engines()})
+    return 0
+
+
+def cmd_calendar(args, ui: UI) -> int:
+    """Read-only calendar: show a day's events, or set which feed to read."""
+    from ..util import ics
+
+    config = Config.load(args.home)
+    agent = dict(config.agent or {})
+    if args.set:
+        source = args.set.strip()
+        agent["calendar_ics"] = source
+        # A URL is the owner's explicit choice, but asking once more keeps the
+        # rule "nothing leaves the machine silently" true for a secret address.
+        if ics.is_url(source):
+            agent["calendar_allow_network"] = True
+            shown = ics.masked_url(source)
+        else:
+            agent["calendar_allow_network"] = False
+            shown = source
+        config.agent = agent
+        config.save()
+        ui.emit({"ok": True, "calendar": shown,
+                 "note": "read-only; creating events needs OAuth (not built yet)"})
+        return 0
+    source = str(agent.get("calendar_ics") or "")
+    if not source:
+        ui.err("no calendar set - `brain calendar --set <path-or-ics-url>`")
+        return 2
+    got = ics.load(source, allow_network=bool(agent.get("calendar_allow_network")))
+    if not got.get("ok"):
+        ui.err(str(got.get("error")))
+        return 2
+    start, end, label = ics.range_from_text(args.when or "today")
+    data = ics.between(got["text"], start, end)
+    if args.json:
+        ui.emit(data)
+    else:
+        print(ics.render(data, label))
+    return 0
+
+
 def cmd_remind(args, ui: UI) -> int:
     """Set, list, close or snooze a reminder - offline, in the encrypted store."""
     from ..agent.reminders import ReminderBook, ReminderError, next_after, parse_when
@@ -1923,6 +1999,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--id", default=None, help="instruction id (for edit/remove)")
     add_auth(sp)
     sp.set_defaults(func=cmd_instruct)
+
+    sp = sub.add_parser("speak", help="say something out loud (SAPI / Piper, offline)")
+    sp.add_argument("text", nargs="*", help="the words to say")
+    sp.add_argument("--voice", default="", help="a SAPI voice name")
+    sp.add_argument("--wav", default=None, help="write a WAV here instead of speaking")
+    sp.add_argument("--list-voices", action="store_true", help="show installed voices")
+    sp.set_defaults(func=cmd_speak)
+
+    sp = sub.add_parser("languages", help="what Nila reads, and the two she answers in")
+    sp.add_argument("text", nargs="*", help="detect the language of this text instead")
+    sp.set_defaults(func=cmd_languages)
+
+    sp = sub.add_parser("calendar", help="read a .ics calendar (read-only, no login)")
+    sp.add_argument("--set", default="", metavar="PATH_OR_URL",
+                    help="use this .ics file or secret iCal address")
+    sp.add_argument("--when", default="today",
+                    help="today | tomorrow | week | a weekday | a date")
+    sp.set_defaults(func=cmd_calendar)
 
     sp = sub.add_parser("remind", help="reminders: set, list, done, snooze, cancel (offline)")
     # Not `choices=[...]`: the natural typing is `brain remind in 10 minutes to
