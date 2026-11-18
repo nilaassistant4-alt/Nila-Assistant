@@ -210,6 +210,40 @@ def test_an_interlaced_png_is_refused_in_words_not_crashed_on(tmp_path):
         ocr.read(path)
 
 
+def test_a_two_bit_grey_page_is_unpacked_correctly(tmp_path):
+    """2 bits per pixel was decoded wrong once: the pixels were read as bytes."""
+    page = page_module()
+    width, height, grey = page.render_grey("PAY 12", scale=3)
+    rows = bytearray()
+    for y in range(height):
+        line = grey[y * width:(y + 1) * width]
+        rows.append(0)                        # filter: none
+        bits = 0
+        count = 0
+        for value in line:
+            level = min(3, value // 64)       # 0..3 -> 0,85,170,255
+            bits = (bits << 2) | level
+            count += 1
+            if count == 4:
+                rows.append(bits)
+                bits, count = 0, 0
+        if count:
+            rows.append(bits << (2 * (4 - count)))
+    path = tmp_path / "twobit.png"
+    path.write_bytes(_png(width, height, bytes(rows), 2, 0))
+    assert ocr.read(path)["text"] == "PAY 12"
+
+
+def test_a_cut_short_png_says_it_is_incomplete_instead_of_crashing(tmp_path):
+    page = page_module()
+    width, height, grey = page.render_grey("Total 42")
+    good = page.write_png(tmp_path / "good.png", width, height, grey)
+    path = tmp_path / "halved.png"
+    path.write_bytes(good.read_bytes()[:20])
+    with pytest.raises(ocr.OcrError, match="cut short"):
+        ocr.read(path)
+
+
 def test_something_that_is_not_a_png_is_refused_by_name(tmp_path):
     path = tmp_path / "photo.jpg"
     path.write_bytes(b"\xff\xd8\xff\xe0" + b"0" * 100)

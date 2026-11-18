@@ -1,5 +1,59 @@
 # Changelog
 
+## Unreleased — stage 12: the eight rows that said "not built", and five partials (2026-11-04)
+
+### Added
+- **OCR, without a binary — `brain ocr`.** A pure-Python PNG decoder (all five
+  filters, colour types 0/2/3/4/6 at 1/2/4/8/16 bits, palette, alpha; interlaced
+  refused in words), Otsu binarisation, line and word segmentation, and template
+  matching that recovers case from a glyph's height against the page's capitals.
+  Scanned PDF pages (Flate images) are read the same way, so `brain file scan.pdf`
+  no longer answers "cannot read". `brain ocr --demo` writes a page with known
+  words, reads it back and says whether they matched — the feature proves itself on
+  the owner's PC. `tools/text_image.py` is the page writer. Tesseract is preferred
+  automatically the moment it is installed; a page typeset in a real font is
+  reported unsure rather than read confidently wrong (a test enforces that).
+- **Two PCs, one memory — `sync-host.bat`, `sync-join.bat`, `sync-now.bat`.**
+  `tools/sync_lan.py` makes a readable six-group join code (no O/0, I/1, L/l, S/5,
+  B/8), prints the home-network address and port, proves the code against the
+  running server, and saves the token next to the vault so no environment variable
+  is needed. A public address is refused; the server binds 0.0.0.0 and says what
+  that means. `tests/test_sync_over_http_acceptance.py` runs the real server and
+  pushes a record from PC A to PC B through a socket.
+- **Calendar write — `brain calendar --add/--update/--remove/--list`.** A local
+  `.ics` with a stable `UID` and a rising `SEQUENCE`, so importing it again
+  replaces an event instead of duplicating it; moving an event keeps its length; a
+  removal leaves a `CANCELLED` tombstone so the phone removes it too. Google write
+  is still refused, in words, because it needs OAuth.
+- **Search by meaning — `brain search --meaning`.** Vectors are read from a local
+  `.wordvec` text file (GloVe/word2vec format), so there is no download and no
+  torch; coverage is reported so a query the file does not know says so instead of
+  returning confident noise.
+- **Screen reading — `brain screen`.** The safe half of the highest-risk row: there
+  is no capture call anywhere in the module (a test reads the source to be sure),
+  `Win+Shift+S` is printed, and every answer carries `watchful: false`. It reads
+  the words in the picture; the meaning still needs a vision model and it says so.
+- **Music player — `brain music`.** Tags read from the files (ID3v2.2/2.3/2.4,
+  FLAC comments), the file name mined when there are none, the folder remembered
+  once, and the PC's own player does the playing.
+- **Scene cuts — `brain media scenes`, and `--trim` without re-encoding.** Cuts are
+  read from the MP4 keyframe index (`stss`/`stts`) — exact scene starts with no
+  decode, fast on a large file. `--trim 90,135` prints the `-c copy` command and
+  writes nothing until `--run`. `getffmpeg.bat` (`tools/getffmpeg.py`) unpacks only
+  `ffmpeg.exe` and `ffprobe.exe` for frame-by-frame comparison, installs nothing
+  system-wide, and proves the binary runs.
+- **Dashboard: "Today and next" and "Both PCs" panels**, answered by `/v1/calendar`
+  and the new read-only `/v1/sync`, both executed in jsdom against the real server.
+- **Eight new acceptance files**: OCR, sync over HTTP, calendar write, semantic
+  search, two-PC joining, music, screen, video scenes — plus four new checks in
+  `scripts/retest_everything.py`.
+
+### Changed
+- `progress`: **33 done · 8 partial · 3 not built** of 44 (was 31/5/8). The rows
+  moved to `partial` say exactly what they are waiting for.
+- `brain file`: a scanned PDF is read by the built-in OCR, and a PNG screenshot
+  reports the words inside it while still saying its *meaning* needs a vision model.
+
 ## Unreleased — stage 11: voice in, Tamil out, phone both ways, dashboard, .bat (2026-11-04)
 
 ### Added

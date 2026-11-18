@@ -3472,9 +3472,22 @@ def build_parser() -> argparse.ArgumentParser:
                    help="one-time recovery code, used instead of the authenticator")
     sub = p.add_subparsers(dest="command", required=True)
 
+    # Every sub-command gets `--json` in its own position. Wrapping add_parser
+    # once is what keeps the two forms from drifting apart: a new command cannot
+    # forget it, and nobody has to remember to add a line 60 times.
+    _orig_add_parser = sub.add_parser
+
+    def _add_parser(*a, **kw):
+        made = _orig_add_parser(*a, **kw)
+        existing = {o for act in made._actions for o in act.option_strings}
+        if "--json" not in existing:
+            made.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                              help="machine-readable output")
+        return made
+
+    sub.add_parser = _add_parser            # type: ignore[method-assign]
+
     def add_auth(sp):
-        # SUPPRESS: the default is None at both levels, so an absent subparser
-        # value must not overwrite the value parsed at the top level.
         sp.add_argument("--passphrase", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
         sp.add_argument("--passphrase-env", default=argparse.SUPPRESS, metavar="VAR")
         sp.add_argument("--passphrase-stdin", action="store_true", default=argparse.SUPPRESS)
@@ -3980,7 +3993,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_doctor)
 
     sp = sub.add_parser("report", help="health report: what works, what is blocked, how to fix it")
-    sp.add_argument("--json", action="store_true")
     add_auth(sp)
     sp.set_defaults(func=cmd_report)
 

@@ -226,6 +226,18 @@ def test_the_start_window_prints_an_address_port_and_code(capsys, monkeypatch):
     assert "same Wi-Fi" in printed or "Wi-Fi" in printed
 
 
+def test_the_code_is_a_token_and_the_join_accepts_either_case(host, tmp_path):
+    """A token is case-sensitive; a person typing fours by hand is not."""
+    token = host["token"]
+    upper = sync_lan.join_code(token).upper()
+    # the token is case-sensitive, so both cases are tried - and only those, with
+    # no third guess that could lock the server out
+    plain = sync_lan.normalise_code(upper)
+    assert sync_lan.code_variants(upper) == [plain, plain.lower()]
+    assert sync_lan.normalise_code(upper).upper() == token.upper()
+    assert sync_lan.normalise_code(" peup m2r4 ") == "peupm2r4"   # spaces are fine
+
+
 def test_the_three_scripts_exist_are_crlf_and_only_call_python():
     """A double-click has to work: same rules as every other .bat in the ZIP."""
     for name in ("sync-host.bat", "sync-join.bat", "sync-now.bat"):

@@ -219,6 +219,12 @@ update          apply signed releases       keygen     generate a signing key
 device          enrol/list/import devices
 instruct        standing rules (owner only) connectors AI + outside services, keys
 session         idle rule; --touch = "still here"
+ocr             read words out of a picture or a scanned PDF (nothing installed)
+screen          read the words in a screenshot YOU took (never captures)
+music           play songs from your own folders (no account)
+media           video: scene cuts, and cutting without re-encoding
+search          find a memory by meaning, from a local word-vector file
+calendar        read an .ics, or --add/--update/--remove a local one
 ```
 
 Two commands deserve a note:
@@ -236,6 +242,52 @@ Two commands deserve a note:
 `brain permission --help` and `docs/PERMISSIONS.md` cover the permission model.
 
 ---
+
+## Reading, showing, playing, cutting (v0.2, stage 12)
+
+    brain ocr --demo                      # writes a page, reads it back, compares
+    brain ocr page.png                    # the words in a picture
+    brain file scanned-invoice.pdf        # a scanned PDF is read, not refused
+    brain ocr --engines                   # built-in reader vs Tesseract
+    brain screen                          # what to press; then give it the picture
+    brain music --add-folder "D:/Songs"   # once; then `brain music <words> --play`
+    brain media scenes video.mp4          # scene starts, from the video's own index
+    brain media video.mp4 --trim 90,135   # the command; --run actually writes it
+    brain search --wordvec glove.txt --meaning "scooter needs fixing"
+
+**What the built-in OCR can and cannot do, measured.** It decodes a PNG itself and
+reads pages printed in *its own* font exactly, at any size, bit depth or noise - so a
+screenshot of text, a fax-style scan and a scanned PDF work with nothing installed.
+A page typeset in a real font (Sans, Serif, Mono were measured) is read badly; when
+that happens the answer is marked unsure and points at Tesseract rather than handing
+over wrong words at full confidence. `brain ocr --how` gives the two-line install
+for photo-grade OCR and Tamil.
+
+**Screen reading has no capture code.** `brain/agent/screen.py` cannot take a
+screenshot: there is no call to any screen API in it, and a test reads the source to
+keep it that way. You press Win+Shift+S, save, and hand Nila the file; every answer
+says `watchful: false`. What the picture *means* needs a vision model; the words in
+it are read here.
+
+**Scene cuts are read, not guessed.** An MP4 lists the frames the encoder marked as
+independent (`stss`), and those are the scene starts - exact, and no decode, so a
+10 GB file takes milliseconds. A cut is planned first and copies the stream
+(`-c copy`), so the picture is unchanged; `--run` is required to write anything.
+Frame-by-frame comparison and silence detection do need a decoder: `getffmpeg.bat`
+puts two `.exe` files in `tools\` (no installer, no admin rights) and proves they run.
+
+## Two PCs, one memory (v0.2, stage 12)
+
+    PC 1:  sync-host.bat      # prints an address, a port and a join code
+    PC 2:  sync-join.bat      # type those two things, once
+    either: sync-now.bat      # catch up whenever you like
+
+The join code is six groups of four characters with no O/0, I/1, L/l, S/5 or B/8 in
+it, so reading it over the phone is safe. The token is proved against the server
+before anything is saved, and stored next to the vault, so no environment variable is
+involved. **A public address is refused**: the two PCs must be on the same Wi-Fi, and
+the data is ciphertext before it leaves either one. See `cloud/README.md` for running
+the server elsewhere, and `tests/test_sync_over_http_acceptance.py` for the proof.
 
 ## Passphrase handling
 
@@ -406,17 +458,25 @@ With no engine, `spoken` is false, the reason and the exact fix are stated, and 
 place-holder audio is passed off as speech - a silent no is better than a confident
 lie. There is a section on all of this in stage 11, below.
 
-## Calendar, read-only (v0.2, stage 3)
+## Calendar (v0.2, stage 3 read; stage 12 write)
 
     brain calendar --set ~/calendar.ics
     brain calendar --set "https://calendar.google.com/calendar/ical/.../basic.ics"
     brain calendar --when tomorrow
+    brain calendar --add "Dentist" --start "2026-11-06 10:30" --where "Anna Nagar"
+    brain calendar --list
 
 Google publishes each calendar as a *secret address in iCal format*: no login, and
-no way to write to it. Repeats (daily, weekly, by-day, monthly, count, until),
+no way to write to **it**. Repeats (daily, weekly, by-day, monthly, count, until),
 all-day events, timezones and folded lines are handled. A calendar address is
-treated like a password - only its host is ever printed. Creating an event needs
-OAuth and is not built yet; Nila says so instead of offering a button that fails.
+treated like a password - only its host is ever printed.
+
+Writing goes to a local `.ics` (in the vault folder by default) that your phone or
+Google Calendar imports once. The `UID` stays the same across edits and `SEQUENCE`
+goes up, so importing an updated file **replaces** the event instead of adding a
+second copy; moving an event keeps its length, and a removal leaves a `CANCELLED`
+entry so the phone removes it too. Writing straight into Google still needs OAuth,
+and Nila says that instead of offering a button that fails.
 
 ## Free connectors (v0.2, stage 5)
 

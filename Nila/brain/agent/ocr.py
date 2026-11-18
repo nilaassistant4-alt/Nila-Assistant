@@ -150,6 +150,9 @@ def decode_png(data: bytes) -> Bitmap:
         chunk = data[pos + 8:pos + 8 + length]
         pos += 12 + length
         if ctag == b"IHDR":
+            if len(chunk) < 13:
+                raise OcrError("this PNG is cut short - the file is incomplete "
+                               "(copy it again, or re-save it)")
             width, height, depth, ctype, _comp, _filt, interlace = struct.unpack(
                 ">IIBBBBB", chunk[:13])
             if interlace:

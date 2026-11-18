@@ -592,17 +592,25 @@ def main() -> int:
 
     # ---- 20. packaging ---------------------------------------------------- #
     def packaging():
-        zip_path = ROOT.parent / "Nila-verification-v0.2-ab-included.zip"
-        if not zip_path.exists():
+        # The newest stage ZIP beside the checkout - the name changes every stage,
+        # so a hard-coded one silently skipped this check (found in stage 12).
+        candidates = sorted(ROOT.parent.glob("NILA_V02_STAGE*.zip"))
+        if not candidates:
             # Running from an extracted ZIP: there is nothing beside it to check.
-            return SKIP, f"no ZIP next to this checkout ({ROOT.parent.name})"
+            return SKIP, f"no stage ZIP next to this checkout ({ROOT.parent.name})"
+        zip_path = candidates[-1]
+        required = ("brain/agent/ears.py", "brain/agent/ocr.py",
+                    "brain/agent/screen.py", "brain/agent/music.py",
+                    "tools/sync_lan.py", "sync-host.bat", "sync-join.bat",
+                    "sync-now.bat", "getffmpeg.bat")
         with zipfile.ZipFile(zip_path) as z:
             names = z.namelist()
             bad = [n for n in names if "__pycache__" in n or n.endswith(".pyc")]
-            has_stage = any(n.endswith("brain/agent/ears.py") for n in names)
-        return (PASS if not bad and has_stage else FAIL,
-                f"{len(names)} files, {zip_path.stat().st_size:,} bytes, "
-                f"junk={len(bad)}, stage7 files={has_stage}")
+            missing = [want for want in required
+                       if not any(n.endswith(want) for n in names)]
+        return (PASS if not bad and not missing else FAIL,
+                f"{zip_path.name}: {len(names)} files, {zip_path.stat().st_size:,} "
+                f"bytes, junk={len(bad)}, missing={missing or 'none'}")
 
     check("packaging: the ZIP carries the current code", packaging)
 

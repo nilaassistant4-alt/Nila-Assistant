@@ -173,6 +173,33 @@ def test_only_the_two_programs_are_unpacked_and_nothing_else(tmp_path):
     assert written == ["ffmpeg.exe", "ffprobe.exe"]
 
 
+def test_a_real_download_is_not_skipped_because_a_copy_is_already_here(tmp_path,
+                                                                     monkeypatch):
+    """The second half of `install` unpacks a payload the caller already has.
+
+    A pre-check that returns "already here" would silently do nothing, which is
+    exactly the bug this test was written for.
+    """
+    import io
+    import zipfile
+
+    exist = tmp_path / "ffmpeg.exe"
+    exist.write_bytes(b"MZ")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("bin/ffmpeg.exe", b"MZ ffmpeg")
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(getffmpeg, "find_binary", lambda name="ffmpeg": str(exist))
+    monkey.setattr(getffmpeg, "prove", lambda path: {"ok": True, "path": path,
+                                                     "version": "ffmpeg version test"})
+    try:
+        out = getffmpeg.install(data=buffer.getvalue(), dest=tmp_path / "tools")
+    finally:
+        monkey.undo()
+    assert out["installed"] is True
+    assert (tmp_path / "tools" / "ffmpeg.exe").is_file()
+
+
 def test_a_download_that_is_not_a_zip_is_named(tmp_path):
     with pytest.raises(RuntimeError, match="not a zip"):
         getffmpeg.install(data=b"<html>blocked by the proxy</html>", dest=tmp_path)

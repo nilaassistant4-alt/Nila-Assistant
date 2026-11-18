@@ -9,6 +9,10 @@ Two uses, and both are honest about what they are:
 * **A picture to test a scanned PDF.** `--pdf report.pdf` wraps the same page as a
   Flate image inside a PDF, which is what a scanner produces (minus the skew),
   so the scanned-PDF path can be exercised without a scanner.
+* **A page a person can look at.** `--png` writes the same words as an ordinary
+  grey-on-white snippet, and `--read` runs the reader on it, so "it works" can be
+  seen rather than taken on trust. That pair is why the answer below is a picture
+  in the chat and not a paragraph claiming one.
 
 This renders with the same 5x7 font the reader knows, so it tests the *pipeline*
 (PNG decode, filters, line and word segmentation, classification) rather than a
