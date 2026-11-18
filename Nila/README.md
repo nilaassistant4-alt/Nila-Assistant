@@ -407,3 +407,24 @@ no way to write to it. Repeats (daily, weekly, by-day, monthly, count, until),
 all-day events, timezones and folded lines are handled. A calendar address is
 treated like a password - only its host is ever printed. Creating an event needs
 OAuth and is not built yet; Nila says so instead of offering a button that fails.
+
+## Free connectors (v0.2, stage 5)
+
+    brain web pack                          # what is in the pack and what it needs
+    brain web weather Chennai               # Open-Meteo: no key, no account
+    brain web wiki "drip irrigation"        # Wikipedia, with the source link
+    brain web wiki "தமிழ்" --lang ta        # in Tamil
+    brain web youtube "drip irrigation"     # links (needs a free Google API key)
+    brain web transcript <youtube link>     # what is said in the video
+    brain web rss https://example.com/feed  # headlines
+
+Weather, Wikipedia, transcripts and RSS need **no account at all**; YouTube search
+needs a free Google API key, kept in the sealed vault. Every one of them is a
+plain GET to a named host, so every one is gated by the same `net.host` permission
+as any other network call: one approval, one call, audited.
+
+    brain start                             # unlock and open the app, one command
+
+`brain start` replaces the old three steps (`unlock`, then `serve`, then copy the
+printed token). The token goes into the address the browser opens with, and
+`--show-token` prints it if you need it by hand.

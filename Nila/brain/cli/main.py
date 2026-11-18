@@ -1456,6 +1456,100 @@ def cmd_issue(args, ui: UI) -> int:
             memory.close()
 
 
+def cmd_web(args, ui: UI) -> int:
+    """The free connectors, from the command line."""
+    from ..agent import web
+
+    what = (args.what or "").lower()
+    query = " ".join(args.text or []).strip()
+    try:
+        if what in ("weather", "w", "வானிலை"):
+            tamil = bool(re.search(r"[\u0B80-\u0BFF]", query))
+            place = re.sub(r"\b(weather|in|at|for|today|tomorrow|forecast|"
+                           r"வானிலை|இல்)\b", " ", query, flags=re.I).strip(" ,?.")
+            res = web.weather(place or "Chennai", days=args.days, tamil=tamil)
+        elif what in ("wiki", "wikipedia"):
+            res = web.wikipedia(query, lang=args.lang or "en")
+        elif what in ("youtube", "yt"):
+            config = Config.load(args.home)
+            # The key lives in the sealed vault, never in config.json: the
+            # connectors screen already stores secrets there, and a plaintext
+            # key in a config file is the mistake the integration gateway
+            # refuses at load time.
+            key = os.environ.get("YOUTUBE_API_KEY", "")
+            if not key:
+                from ..memory.vault import Vault as _Vault
+
+                try:
+                    _v = _Vault(config)
+                    _mk = _v.unlock_env_or_prompt(args)
+                    if _mk:
+                        _v.start_session(_mk, "passphrase")
+                        from ..memory.store import MemoryStore as _Store
+
+                        _m = _Store(config, _mk)
+                        found = _m.search("secret youtube_api_key", limit=1,
+                                          kind="credential_ref")
+                        key = found[0].body.strip() if found else ""
+                        _m.close()
+                        _v.lock()
+                except Exception:
+                    key = ""
+            res = web.youtube_search(query, key, limit=args.limit)
+        elif what in ("transcript", "video"):
+            res = web.youtube_transcript(query)
+            if args.json:
+                pass
+            else:
+                res = {**res, "rendered": (f"{res['title']} ({res['language']})\n"
+                                           f"{res['text'][:1200]}"
+                                           + ("…" if res["chars"] > 1200 else ""))}
+        elif what in ("rss", "news", "feed"):
+            res = web.rss(query, limit=args.limit)
+        elif what in ("pack", "list", "help", ""):
+            rows = web.describe_pack()
+            if args.json:
+                ui.emit({"ok": True, "connectors": rows})
+            else:
+                print(web.help_text())
+                print(f"\n{len(rows)} free connectors:")
+                for r in rows:
+                    print(f"  {r['name']:<20s} {r['label']:<26s} needs: {r['needs']}")
+            return 0
+        else:
+            ui.err(f"unknown connector '{what}' - try: "
+                   f"{', '.join(sorted(web.PACK))}")
+            return 2
+    except web.ConnectorError as exc:
+        ui.err(str(exc))
+        return 2
+    if args.json:
+        ui.emit(res)
+    else:
+        print(res.get("rendered") or res)
+    return 0
+
+
+def cmd_start(args, ui: UI) -> int:
+    """One command: unlock if needed, then open the app.
+
+    Three steps used to be three commands (`unlock`, then `serve`, then find the
+    printed token). The token is not printed here - it goes into the address that
+    the browser is opened with, which is the behaviour `brain serve --open`
+    already had.
+    """
+    config, vault = open_vault(args)
+    if not vault.is_unlocked():
+        ui.err("the vault is still locked, so the app was not started")
+        return 2
+    memory = open_memory(config, vault)
+    from ..api.gateway import serve
+
+    return serve(config, vault, memory, host=args.host, port=args.port,
+                 token=args.token, open_browser=not args.no_browser,
+                 show_token=bool(args.show_token))
+
+
 def cmd_speak(args, ui: UI) -> int:
     """Say something, or say plainly why nothing could be said."""
     from ..util import speech
@@ -1999,6 +2093,25 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--id", default=None, help="instruction id (for edit/remove)")
     add_auth(sp)
     sp.set_defaults(func=cmd_instruct)
+
+    sp = sub.add_parser("web", help="free connectors: weather, wikipedia, youtube, rss")
+    sp.add_argument("what", nargs="?", default="pack",
+                    help="weather | wiki | youtube | transcript | rss | pack")
+    sp.add_argument("text", nargs="*", help="the place, topic, query or feed address")
+    sp.add_argument("--days", type=int, default=3, help="forecast days (weather)")
+    sp.add_argument("--lang", default="en", help="wiki language: en or ta")
+    sp.add_argument("--limit", type=int, default=3, help="how many results")
+    sp.set_defaults(func=cmd_web)
+
+    sp = sub.add_parser("start", help="one command: unlock, then open the app")
+    sp.add_argument("--host", default="127.0.0.1")
+    sp.add_argument("--port", type=int, default=8765)
+    sp.add_argument("--token", default=None, help=argparse.SUPPRESS)
+    sp.add_argument("--no-browser", action="store_true", help="do not open a browser")
+    sp.add_argument("--show-token", action="store_true",
+                    help="print the token (it is normally only in the opened address)")
+    add_auth(sp)
+    sp.set_defaults(func=cmd_start)
 
     sp = sub.add_parser("speak", help="say something out loud (SAPI / Piper, offline)")
     sp.add_argument("text", nargs="*", help="the words to say")

@@ -383,6 +383,75 @@ def build_default_registry() -> ToolRegistry:
             raise ToolError(f"cannot evaluate: {exc}") from exc
         return {"ok": True, "expression": expr, "result": value}
 
+    # -- free connectors (stage 5) ------------------------------------- #
+    # Each of these is a plain GET to a named host, so each is gated by the same
+    # net.host capability as any other egress: one approval, one call.
+    @reg.tool(
+        name="web_weather",
+        description="Current weather and a short forecast for a place. Free, no key.",
+        parameters={"type": "object", "properties": {
+            "place": {"type": "string"}, "days": {"type": "integer"}},
+            "required": ["place"]},
+        risk="low", capability=CAP_NET, tags=["web", "weather"],
+    )
+    def web_weather(ctx: ToolContext, place: str, days: int = 3) -> Dict[str, Any]:
+        from . import web
+
+        return web.weather(place, days=int(days or 3))
+
+    @reg.tool(
+        name="web_wikipedia",
+        description="A short Wikipedia summary with its source link.",
+        parameters={"type": "object", "properties": {
+            "topic": {"type": "string"}, "lang": {"type": "string"}},
+            "required": ["topic"]},
+        risk="low", capability=CAP_NET, tags=["web"],
+    )
+    def web_wikipedia(ctx: ToolContext, topic: str, lang: str = "en") -> Dict[str, Any]:
+        from . import web
+
+        return web.wikipedia(topic, lang=lang)
+
+    @reg.tool(
+        name="web_youtube_search",
+        description="Search YouTube and return links. Needs a free Google API key.",
+        parameters={"type": "object", "properties": {
+            "query": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["query"]},
+        risk="low", capability=CAP_NET, tags=["web", "youtube"],
+    )
+    def web_youtube_search(ctx: ToolContext, query: str, limit: int = 3) -> Dict[str, Any]:
+        from . import web
+
+        key = str((ctx.config.agent or {}).get("youtube_api_key") or "")
+        return web.youtube_search(query, key, limit=int(limit or 3))
+
+    @reg.tool(
+        name="web_youtube_transcript",
+        description="Read what is said in a YouTube video (its caption track). "
+                    "Free, no key.",
+        parameters={"type": "object", "properties": {
+            "url": {"type": "string"}}, "required": ["url"]},
+        risk="low", capability=CAP_NET, tags=["web", "youtube"],
+    )
+    def web_youtube_transcript(ctx: ToolContext, url: str) -> Dict[str, Any]:
+        from . import web
+
+        return web.youtube_transcript(url)
+
+    @reg.tool(
+        name="web_rss",
+        description="Headlines from an RSS or Atom feed.",
+        parameters={"type": "object", "properties": {
+            "feed_url": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["feed_url"]},
+        risk="low", capability=CAP_NET, tags=["web", "rss"],
+    )
+    def web_rss(ctx: ToolContext, feed_url: str, limit: int = 5) -> Dict[str, Any]:
+        from . import web
+
+        return web.rss(feed_url, limit=int(limit or 5))
+
     # -- calendar, read-only (stage 3) --------------------------------- #
     @reg.tool(
         name="calendar",
