@@ -5,8 +5,13 @@ Google Calendar publishes each calendar as a *secret address in iCal format*:
 a URL that needs no password and cannot be written to. That is the whole basis of
 this module, and the limits are stated rather than hidden:
 
-* **Reading only.** An ICS feed is one-way. Creating an event needs OAuth, which
-  is a later stage; saying so beats a button that silently fails.
+* **Read, and write to a file.** An ICS feed is one-way, so `add`/`update` never
+  touch the feed: they write a *local* `.ics` that your phone, Outlook or Google
+  can import, and they are the same shape a real calendar uses (`UID` stable
+  across edits, `SEQUENCE` incremented, `DTSTAMP` refreshed) so that importing an
+  updated file replaces the event instead of duplicating it. Writing back to
+  Google still needs OAuth, which is a later stage; saying so beats a button that
+  silently fails.
 * **Fetching is the owner's decision.** ``load`` takes a path or a URL, but a URL
   is only fetched when the caller says so - the agent asks first and reports the
   host, because a calendar address is as private as a password.
@@ -17,9 +22,11 @@ this module, and the limits are stated rather than hidden:
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import re
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -111,6 +118,7 @@ class Event:
     all_day: bool = False
     uid: str = ""
     rrule: str = ""
+    status: str = ""          # "CANCELLED" is a removal, not an event to show
 
     def to_dict(self) -> Dict[str, Any]:
         return {"start": self.start.isoformat(timespec="minutes"),
@@ -155,7 +163,8 @@ def parse_ics(raw: str) -> Tuple[List[Event], List[str]]:
                                         location=cur.get("location", ""),
                                         all_day=bool(cur.get("all_day")),
                                         uid=cur.get("uid", ""),
-                                        rrule=cur.get("rrule", "")))
+                                        rrule=cur.get("rrule", ""),
+                                        status=str(cur.get("status", ""))))
                 cur = None
             if stack:
                 stack.pop()
@@ -177,6 +186,8 @@ def parse_ics(raw: str) -> Tuple[List[Event], List[str]]:
             cur["uid"] = value.strip()
         elif name == "RRULE":
             cur["rrule"] = value.strip()
+        elif name == "STATUS":
+            cur["status"] = value.strip().upper()
     return events, skipped
 
 
@@ -249,6 +260,9 @@ def between(raw: str, start: _dt.date, end: _dt.date,
             now: Optional[_dt.datetime] = None) -> Dict[str, Any]:
     """Events from `start` to `end` (inclusive dates), sorted, repeats expanded."""
     events, skipped = parse_ics(raw)
+    # A cancelled entry is a receipt, not an appointment: it is in the file so an
+    # import removes the event elsewhere, and it must never be shown as one.
+    events = [e for e in events if e.status.upper() != "CANCELLED"]
     horizon = _dt.datetime.combine(end + _dt.timedelta(days=1),
                                    _dt.time.min, tzinfo=None)
     window_start = _dt.datetime.combine(start, _dt.time.min)
@@ -382,3 +396,201 @@ def render(data: Dict[str, Any], label: str = "") -> str:
     if data.get("skipped"):
         out.append(f"  ({len(data['skipped'])} entr(y/ies) skipped - unreadable time)")
     return "\n".join(out)
+
+
+# --------------------------------------------------------------------------- #
+# writing: a local .ics your phone can import
+# --------------------------------------------------------------------------- #
+class IcsWriteError(RuntimeError):
+    """Writing the calendar failed, in words the owner can act on."""
+
+
+def _escape(text: str) -> str:
+    """RFC 5545: commas, semicolons, backslashes and newlines are escaped."""
+    return (str(text or "").replace("\\", "\\\\").replace(";", "\\;")
+            .replace(",", "\\,").replace("\n", "\\n").replace("\r", ""))
+
+
+def _fold(line: str, limit: int = 75) -> List[str]:
+    """Fold a long line the way the RFC says, so other calendars read it."""
+    out = [line[:limit]]
+    rest = line[limit:]
+    while rest:
+        out.append(" " + rest[: limit - 1])
+        rest = rest[limit - 1:]
+    return out
+
+
+def _dt_line(name: str, when: _dt.datetime, all_day: bool) -> str:
+    if all_day:
+        return f"{name};VALUE=DATE:{when.strftime('%Y%m%d')}"
+    return (f"{name}:{when.strftime('%Y%m%dT%H%M%S')}")
+
+
+def new_uid(summary: str = "", when: Optional[_dt.datetime] = None,
+            domain: str = "nila.local") -> str:
+    """A stable-looking but unpredictable id - the same event keeps it for ever."""
+    stamp = (when or _dt.datetime.now()).strftime("%Y%m%dT%H%M%S")
+    digest = hashlib.sha256(f"{summary}|{stamp}|{uuid.uuid4()}".encode()).hexdigest()[:16]
+    return f"{stamp}-{digest}@{domain}"
+
+
+def _all_events(path: Path) -> List[Event]:
+    """Everything in the file, cancelled entries included (they are tombstones)."""
+    p = Path(path).expanduser()
+    if not p.exists():
+        return []
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise IcsWriteError(f"could not read {p}: {exc}") from exc
+    events, _skipped = parse_ics(text)
+    return events
+
+
+def read_events(path: Path) -> List[Event]:
+    """The events in a local file that are still events (empty if none)."""
+    return [e for e in _all_events(path)
+            if e.status.upper() != "CANCELLED" and not e.summary.startswith("(")]
+
+
+def _rewrite(path: Path, kept: List[Event], extra: List[str], name: str) -> None:
+    stamp = _dt.datetime.now()
+    body: List[str] = []
+    for event in kept:
+        body += _event_body(event, event.summary, event.location, "",
+                            0, stamp, event.uid)
+    body += extra
+    path.write_text(_wrap_calendar(body, name), encoding="utf-8")
+
+
+def _wrap_calendar(body: List[str], name: str) -> str:
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Nila Assistant//Calendar//EN",
+             "CALSCALE:GREGORIAN", f"X-WR-CALNAME:{_escape(name or 'Nila')}"]
+    lines += body
+    lines += ["END:VCALENDAR", ""]
+    folded: List[str] = []
+    for line in lines:
+        if not line.strip():          # a blank line ends the calendar for some readers
+            continue
+        folded.extend(_fold(line))
+    return "\r\n".join(folded) + "\r\n"
+
+
+def _event_body(event: Event, summary: str, location: str, description: str,
+                sequence: int, stamp: _dt.datetime, uid: str) -> List[str]:
+    end = event.end
+    if not event.all_day and end is None:
+        end = event.start + _dt.timedelta(hours=1)
+    if event.all_day and end is None:
+        end = event.start + _dt.timedelta(days=1)
+    return ["BEGIN:VEVENT",
+            f"UID:{uid}",
+            f"DTSTAMP:{stamp.strftime('%Y%m%dT%H%M%SZ')}",
+            f"SEQUENCE:{int(sequence)}",
+            _dt_line("DTSTART", event.start, event.all_day),
+            _dt_line("DTEND", end, event.all_day),
+            f"SUMMARY:{_escape(summary)}",
+            f"LOCATION:{_escape(location)}" if location else "",
+            f"DESCRIPTION:{_escape(description)}" if description else "",
+            *(   [f"RRULE:{event.rrule}"] if event.rrule else []),
+            "END:VEVENT"]
+
+
+def add_event(path: Path | str, summary: str, start: _dt.datetime,
+              end: Optional[_dt.datetime] = None, location: str = "",
+              description: str = "", all_day: bool = False,
+              rrule: str = "", name: str = "Nila") -> Dict[str, Any]:
+    """Add one event to a local .ics file, creating the file if needed."""
+    when = start if not all_day else start.replace(hour=0, minute=0, second=0, microsecond=0)
+    if not str(summary or "").strip():
+        raise IcsWriteError("an event needs a title")
+    event = Event(start=when, end=end, summary=summary, location=location,
+                  all_day=all_day, rrule=rrule)
+    p = Path(path).expanduser()
+    uid = new_uid(summary, when)
+    event.uid = uid
+    stamp = _dt.datetime.now()
+    keep = _all_events(p)
+    body = _event_body(event, summary, location, description, 0, stamp, uid)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        _rewrite(p, keep, body, name)
+    except OSError as exc:
+        raise IcsWriteError(f"could not write {p}: {exc}") from exc
+    return {"ok": True, "path": str(p), "uid": uid, "sequence": 0,
+            "summary": summary, "location": location,
+            "start": when.isoformat(timespec="minutes"),
+            "all_day": all_day, "created": True,
+            "note": ("import this file into your phone or Google Calendar; "
+                     "writing straight into a Google calendar needs OAuth (not built)")}
+
+
+def update_event(path: Path | str, uid: str, summary: Optional[str] = None,
+                 start: Optional[_dt.datetime] = None,
+                 end: Optional[_dt.datetime] = None, location: Optional[str] = None,
+                 description: Optional[str] = None, all_day: Optional[bool] = None,
+                 name: str = "Nila") -> Dict[str, Any]:
+    """Change one event, keeping its UID and raising SEQUENCE.
+
+    The UID staying the same is what makes an import *replace* the old event
+    instead of adding a second copy - which is the whole reason a calendar file
+    can be edited at all.
+    """
+    p = Path(path).expanduser()
+    events = _all_events(p)
+    if not uid:
+        raise IcsWriteError("give the event's UID (brain calendar --list shows it)")
+    stamp = _dt.datetime.now()
+    found = False
+    body: List[str] = []
+    for event in events:
+        if event.uid != uid:
+            body += _event_body(event, event.summary, event.location, "",
+                                0, stamp, event.uid)
+            continue
+        found = True
+        new_summary = summary if summary is not None else event.summary
+        new_start = start if start is not None else event.start
+        new_end = end if end is not None else event.end
+        if start is not None and end is None and event.end is not None:
+            # Moving an event keeps its length. Leaving the old end behind made
+            # an event that finished before it started.
+            new_end = new_start + (event.end - event.start)
+        new_location = location if location is not None else event.location
+        new_all_day = all_day if all_day is not None else event.all_day
+        if new_all_day:
+            new_start = new_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        changed = Event(start=new_start, end=new_end, summary=new_summary,
+                        location=new_location or "", all_day=new_all_day,
+                        uid=uid, rrule=event.rrule)
+        body += _event_body(changed, new_summary, new_location or "", description or "",
+                            1, stamp, uid)
+    if not found:
+        raise IcsWriteError(f"no event with UID {uid} in {p}")
+    try:
+        p.write_text(_wrap_calendar(body, name), encoding="utf-8")
+    except OSError as exc:
+        raise IcsWriteError(f"could not write {p}: {exc}") from exc
+    return {"ok": True, "path": str(p), "uid": uid, "sequence": 1, "updated": True}
+
+
+def remove_event(path: Path | str, uid: str, name: str = "Nila") -> Dict[str, Any]:
+    """Remove one event from a local file. A tombstone is written, not silence."""
+    p = Path(path).expanduser()
+    events = _all_events(p)
+    keep = [e for e in events if e.uid != uid]
+    if len(keep) == len(events):
+        raise IcsWriteError(f"no event with UID {uid} in {p}")
+    stamp = _dt.datetime.now()
+    body: List[str] = []
+    for event in keep:
+        body += _event_body(event, event.summary, event.location, "", 0, stamp, event.uid)
+    body += ["BEGIN:VEVENT", f"UID:{uid}",
+             f"DTSTAMP:{stamp.strftime('%Y%m%dT%H%M%SZ')}", "SEQUENCE:2",
+             "STATUS:CANCELLED",
+             _dt_line("DTSTART", stamp, False),
+             "SUMMARY:(removed)"]
+    body += ["END:VEVENT"]
+    p.write_text(_wrap_calendar(body, name), encoding="utf-8")
+    return {"ok": True, "path": str(p), "uid": uid, "removed": True}

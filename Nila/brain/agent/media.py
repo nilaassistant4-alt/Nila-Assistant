@@ -164,6 +164,16 @@ def _pdf_text(path: Path) -> str:
     return " ".join(text.split())
 
 
+def _pdf_via_ocr(path: Path) -> str:
+    """A scanned PDF: read its page images. Empty string when that is not possible."""
+    try:
+        from . import ocr
+        out = ocr.read_scanned_pdf(path)
+    except Exception:                 # a picture we cannot decode is "no text", not a crash
+        return ""
+    return str(out.get("text") or "")
+
+
 def read_document(path: Path, limit: int = MAX_TEXT_CHARS) -> Dict[str, Any]:
     """The text of a document, plus what kind it was and whether it was scanned."""
     ext = path.suffix.lower()
@@ -176,6 +186,8 @@ def read_document(path: Path, limit: int = MAX_TEXT_CHARS) -> Dict[str, Any]:
             text = _pptx_text(path)
         elif ext == ".pdf":
             text = _pdf_text(path)
+            if not text:
+                text = _pdf_via_ocr(path)
         elif ext in (".html", ".htm", ".xml"):
             body = path.read_text(encoding="utf-8", errors="replace")
             text = _unescape_xml(re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ",
@@ -189,12 +201,17 @@ def read_document(path: Path, limit: int = MAX_TEXT_CHARS) -> Dict[str, Any]:
     # test: a two-word invoice number is a successful read, not a scan. Only an
     # empty extraction means "there is no text layer here".
     scanned = ext == ".pdf" and not text
+    ocr_text = ext == ".pdf" and bool(text) and not _pdf_text(path)
     return {"ok": True, "path": str(path), "kind": kind_of(path), "format": ext,
             "chars": len(text), "text": text[:limit],
             "truncated": len(text) > limit, "scanned": scanned,
-            "note": ("this looks like a scanned PDF (pages are images), so there is "
-                     "no text inside it - reading it needs OCR, which is not "
-                     "installed") if scanned else ""}
+            "note": (("this looks like a scanned PDF (pages are images), so there is "
+                      "no text inside it, and the built-in OCR could not make words "
+                      "out of the page images - a real scan usually needs "
+                      "pytesseract (`brain ocr --how`)") if scanned
+                     else ("no text layer - these words were read by the built-in "
+                           "OCR from the page images (`brain ocr`)") if ocr_text
+                     else "")}
 
 
 # --------------------------------------------------------------------------- #
@@ -435,10 +452,27 @@ def analyze_image(path: Path) -> Dict[str, Any]:
         fmt = "gif"
         width = int.from_bytes(head[6:8], "little")
         height = int.from_bytes(head[8:10], "little")
-    return {"ok": True, "path": str(path), "format": fmt, "width": width,
-            "height": height, "bytes": path.stat().st_size,
-            "caption": "", "note": ("understanding what is IN the picture needs a "
-                                    "vision model; this reports its shape only")}
+    out = {"ok": True, "path": str(path), "format": fmt, "width": width,
+           "height": height, "bytes": path.stat().st_size, "caption": "",
+           "text": "", "note": ("understanding what is IN the picture needs a "
+                                "vision model; this reports its shape only")}
+    if fmt == "png":
+        # A screenshot is a PNG, and the words in it can be read here. The
+        # picture's *meaning* still needs a vision model - that part of the note
+        # is true and stays true.
+        try:
+            from . import ocr
+            read = ocr.read_image(path)
+        except Exception:             # unsupported or corrupt picture: shape only
+            read = {}
+        if read.get("text"):
+            out["text"] = read["text"]
+            out["rendered"] = (f"{path.name}: {width}x{height} {fmt}, "
+                               f"{len(read['text'].split())} words of text in it")
+            out["note"] = (f"the words in the picture were read by the built-in "
+                           f"reader (confidence {read.get('confidence')}); what the "
+                           f"picture *means* still needs a vision model")
+    return out
 
 
 # --------------------------------------------------------------------------- #

@@ -158,6 +158,77 @@ class HashingEmbedder:
         return [self.embed(t) for t in texts]
 
 
+class GloveWordVectorEmbedder:
+    """Real word vectors from a local GloVe/word2vec text file - no download.
+
+    The owner already has the pieces this needs: a `.wordvec` file on disk (the
+    50/100/200-d GloVe `.txt` files, one word and its numbers per line). Reading
+    one is a few lines of Python and a dict, and a sentence becomes the mean of
+    its words' vectors, normalised. That gives *semantic* retrieval ("the bike
+    broke" finds "scooter repair") where the hashing embedder only gives lexical
+    overlap, without adding torch, a model download, or a network call.
+
+    Deliberately not whisper-networked: if the file is not there, `available()`
+    is false and `make_embedder` falls back to hashing, saying so.
+    """
+
+    def __init__(self, path: str | Path, dim: int = 0, max_words: int = 400_000):
+        self.path = Path(path).expanduser()
+        self.vectors: Dict[str, List[float]] = {}
+        self.dim = 0
+        if not self.path.is_file():
+            raise FileNotFoundError(f"no word-vector file at {self.path}")
+        with self.path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if len(self.vectors) >= max_words:
+                    break
+                parts = line.rstrip().split(" ")
+                if len(parts) < 3:
+                    continue
+                word = parts[0]
+                try:
+                    vec = [float(x) for x in parts[1:]]
+                except ValueError:
+                    continue
+                if self.dim and len(vec) != self.dim:
+                    continue
+                self.dim = len(vec)
+                self.vectors[word.lower()] = vec
+        if not self.vectors:
+            raise ValueError(f"{self.path} does not look like a word-vector file "
+                             f"(one word and its numbers per line)")
+        self.name = f"wordvec:{self.path.name}:{self.dim}d"
+
+    def _words(self, text: str) -> List[str]:
+        return [w for w in TOKEN_RE.findall((text or "").lower())
+                if len(w) > 1 and w not in STOPWORDS]
+
+    def coverage(self, text: str) -> float:
+        """How many of these words the file knows - 0 means say so, do not guess."""
+        words = self._words(text)
+        if not words:
+            return 0.0
+        return len([w for w in words if w in self.vectors]) / len(words)
+
+    def embed(self, text: str) -> List[float]:
+        vec = [0.0] * self.dim
+        used = 0
+        for word in self._words(text):
+            found = self.vectors.get(word)
+            if found is None:
+                continue
+            used += 1
+            for i, value in enumerate(found):
+                vec[i] += value
+        if not used:
+            return [0.0] * self.dim
+        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+        return [v / norm for v in vec]
+
+    def embed_many(self, texts: Sequence[str]) -> List[List[float]]:
+        return [self.embed(t) for t in texts]
+
+
 class SentenceTransformerEmbedder:
     """Optional neural embedder (``pip install personal-brain[semantic]``)."""
 
@@ -176,7 +247,16 @@ class SentenceTransformerEmbedder:
 
 
 def make_embedder(config: Config):
-    want = config.agent.get("embedder", "auto")
+    want = str(config.agent.get("embedder", "auto") or "auto").strip().lower()
+    # A local vector file is tried FIRST: it is the owner's own file, needs no
+    # download, and gives real meaning where hashing only gives shared words.
+    path = str(config.agent.get("wordvec_path") or "").strip()
+    if path and want in ("auto", "wordvec", "glove", "sentence-transformers"):
+        try:
+            return GloveWordVectorEmbedder(path)
+        except (OSError, ValueError):
+            if want in ("wordvec", "glove"):
+                raise                     # asked for it by name: say it is broken
     if want in ("auto", "sentence-transformers"):
         if try_import("sentence_transformers") is not None:
             try:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import datetime as _datetime
 import json
 import os
 import sys
@@ -193,7 +194,7 @@ def open_vault(args, require_unlocked: bool = True, mode: str = "passphrase",
     return config, vault
 
 
-def open_memory(config: Config, vault: Vault) -> MemoryStore:
+def open_memory(config: Config, vault: Vault, embedder=None) -> MemoryStore:
     """Open the store and pin it to this session's access level.
 
     The level decides two things: which vector class keys are loaded (so sealed
@@ -205,7 +206,7 @@ def open_memory(config: Config, vault: Vault) -> MemoryStore:
     from ..security.classify import session_tier
     return MemoryStore(config, vault.session.mk,
                        access_level=session_tier(vault.session),
-                       session=vault.session)
+                       session=vault.session, embedder=embedder)
 
 
 def warn_if_single_factor(ui: "UI", vault) -> None:
@@ -998,6 +999,54 @@ def cmd_recall(args, ui: UI) -> int:
         ui.say(f"\033[36m{r.score:.3f}\033[0m  {r.id}  ({r.kind}{', ' + ','.join(r.tags) if r.tags else ''})")
         for line in (r.body or r.title).splitlines()[:6]:
             ui.say(f"      {line}")
+    return 0
+
+
+def cmd_search(args, ui: UI) -> int:
+    """Search memory by meaning, using a local word-vector file. No download."""
+    from ..memory.store import GloveWordVectorEmbedder, cosine
+
+    config, vault = open_vault(args)
+    warn_if_single_factor(ui, vault)
+    path = (args.wordvec or str((config.agent or {}).get("wordvec_path") or "")).strip()
+    query = " ".join(args.query)
+    if not path:
+        vault.lock()
+        ui.err("searching by meaning needs a word-vector file, but none is set.\n"
+               "  Get one once (for example glove.6B.50d.txt or any word2vec .txt), then:\n"
+               "  brain search --wordvec D:/vectors/glove.6B.50d.txt --meaning your words\n"
+               "  (without it, `brain recall` still searches by words, offline)")
+        return 2
+    try:
+        embedder = GloveWordVectorEmbedder(path)
+    except (OSError, ValueError) as exc:
+        vault.lock()
+        ui.err(f"{exc}")
+        return 2
+    coverage = embedder.coverage(query)
+    memory = open_memory(config, vault, embedder=embedder)
+    rows = memory.search(query, limit=args.limit, kind=args.kind, tag=args.tag,
+                         semantic_weight=0.9)
+    memory.close()
+    vault.lock()
+    out = [{"id": r.id, "kind": r.kind, "title": r.title, "body": r.body,
+            "score": round(cosine(embedder.embed(query), embedder.embed(r.body)), 4)}
+           for r in rows]
+    if args.json:
+        print(json.dumps({"query": query, "coverage": round(coverage, 3),
+                          "embedder": embedder.name, "results": out}, indent=2))
+        return 0
+    if coverage < 0.5:
+        ui.warn(f"only {int(coverage * 100)}% of your words are in {Path(path).name}; "
+                f"meaning-based results will be weak (a bigger word-vector file helps)")
+    if not out:
+        print("nothing close in meaning.")
+        return 0
+    print(f"{embedder.name} · query coverage {int(coverage * 100)}%")
+    for row in out:
+        print(f"\033[36m{row['score']:.3f}\033[0m  {row['id']}  ({row['kind']})")
+        for line in (row["body"] or row["title"]).splitlines()[:4]:
+            print(f"      {line}")
     return 0
 
 
@@ -2621,8 +2670,11 @@ def cmd_languages(args, ui: UI) -> int:
 
 
 def cmd_calendar(args, ui: UI) -> int:
-    """Read-only calendar: show a day's events, or set which feed to read."""
+    """Calendar: show a day's events, set which feed to read, or write a local file."""
     from ..util import ics
+
+    if args.add or args.update or args.remove or args.list:
+        return _calendar_write(args, ui)
 
     config = Config.load(args.home)
     agent = dict(config.agent or {})
@@ -2656,6 +2708,179 @@ def cmd_calendar(args, ui: UI) -> int:
         ui.emit(data)
     else:
         print(ics.render(data, label))
+    return 0
+
+
+def _calendar_target(args) -> Path:
+    """Where a new event is written: `--file`, else a file inside the vault folder."""
+    base = Path(args.home or os.environ.get("BRAIN_HOME") or (Path.home() / ".personal-brain"))
+    return Path(args.file).expanduser() if args.file else base.expanduser() / "calendar.ics"
+
+
+def _calendar_when(text: str) -> tuple:
+    """'2026-11-06 10:30' / '2026-11-06' / 'tomorrow 9am' -> (datetime, all_day)."""
+    from ..agent.reminders import parse_when
+
+    raw = " ".join(str(text or "").split())
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%d-%m-%Y %H:%M",
+                "%d/%m/%Y %H:%M"):
+        try:
+            return _datetime.datetime.strptime(raw, fmt).replace(second=0, microsecond=0), False
+        except ValueError:
+            pass
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return _datetime.datetime.strptime(raw, fmt), True
+        except ValueError:
+            pass
+    # "tomorrow at 9", "in 90 minutes", "நாளை 9 மணி": the reminder parser already
+    # understands these, so the calendar uses the same words rather than a second
+    # grammar the owner would have to learn.
+    parsed = parse_when(raw)
+    stamp = getattr(parsed, "at_ms", None)
+    if stamp:
+        when = _datetime.datetime.fromtimestamp(int(stamp) / 1000)
+        return when.replace(second=0, microsecond=0), False
+    raise ValueError(f"could not read the time {text!r} - try `2026-11-06 10:30`")
+
+
+def _calendar_write(args, ui: UI) -> int:
+    """Add, change, remove or list events in a local .ics file."""
+    from ..util import ics
+
+    path = _calendar_target(args)
+    try:
+        if args.list:
+            events = ics.read_events(path)
+            if args.json:
+                ui.emit({"ok": True, "path": str(path),
+                         "events": [dict(e.to_dict(), uid=e.uid) for e in events]})
+                return 0
+            if not events:
+                print(f"no events in {path}")
+                return 0
+            print(f"{len(events)} event(s) in {path}:")
+            for event in events:
+                print(f"  {event.start.strftime('%a %d %b %H:%M')}  {event.summary}"
+                      + (f"  @ {event.location}" if event.location else ""))
+                print(f"      uid {event.uid}")
+            return 0
+        if args.add:
+            start, all_day = _calendar_when(args.start or "")
+            end = None
+            if args.end and not all_day:
+                end, _ = _calendar_when(args.end)
+            out = ics.add_event(path, args.add, start, end=end,
+                                location=args.where or "", description=args.note or "",
+                                all_day=all_day, rrule=args.repeat or "")
+            if args.json:
+                ui.emit(out)
+                return 0
+            print(f"added: {out['start']}  {out['summary']}"
+                  + (f"  @ {out['location']}" if out.get("location") else ""))
+            print(f"  file: {out['path']}")
+            print(f"  {out['note']}")
+            return 0
+        if args.update:
+            start = None
+            end = None
+            all_day = None
+            if args.start:
+                start, all_day = _calendar_when(args.start)
+            if args.end:
+                end, _ = _calendar_when(args.end)
+            out = ics.update_event(path, args.update, summary=args.title,
+                                   start=start, end=end, location=args.where,
+                                   description=args.note, all_day=all_day)
+            if args.json:
+                ui.emit(out)
+                return 0
+            print(f"updated {out['uid']} (SEQUENCE {out['sequence']}) in {out['path']}")
+            print("  importing this file again replaces that event, not adds a copy")
+            return 0
+        if args.remove:
+            out = ics.remove_event(path, args.remove)
+            if args.json:
+                ui.emit(out)
+                return 0
+            print(f"removed {out['uid']} from {out['path']} (a cancelled entry is left "
+                  f"behind, so an import removes it on your phone too)")
+            return 0
+    except (ics.IcsWriteError, ValueError) as exc:
+        ui.err(str(exc))
+        return 2
+    ui.err("nothing to do - use --add, --update, --remove or --list")
+    return 2
+
+
+def cmd_ocr(args, ui: UI) -> int:
+    """Read words out of a picture or a scanned PDF - offline, no upload."""
+    from ..agent import ocr
+
+    if args.engines:
+        ui.emit(ocr.engines())
+        return 0
+    if args.how:
+        print(ocr.how_to_install())
+        return 0
+    if args.demo:
+        # A page whose words are known, written next to the vault, then read
+        # back: the only honest way to say "it works on this PC".
+        from pathlib import Path as _Path
+        import importlib.util
+
+        demo_text = args.demo if args.demo is not True else "Nila reads this page\nTotal: 1250 rupees"
+        target = _Path(args.out or "nila-ocr-demo.png").expanduser()
+        spec = importlib.util.spec_from_file_location(
+            "nila_text_image",
+            _Path(__file__).resolve().parents[2] / "tools" / "text_image.py")
+        if spec is None or spec.loader is None:          # pragma: no cover
+            ui.err("the page writer (tools/text_image.py) is not in this install")
+            return 2
+        page = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(page)
+        width, height, grey = page.render_grey(demo_text)
+        page.write_png(target, width, height, grey)
+        out = ocr.read(target)
+        if args.json:
+            ui.emit(out)
+            return 0 if out.get("ok") else 1
+        print(f"wrote {target} ({width}x{height}) and read it back:")
+        print()
+        for line in out["text"].splitlines():
+            print("  " + line)
+        print()
+        same = " ".join(out["text"].split()) == " ".join(demo_text.split())
+        print(f"engine {out['engine']} · confidence {out['confidence']} · "
+              + ("the words came back exactly" if same
+                 else "the words did NOT come back exactly (see above)"))
+        return 0 if same else 1
+    if not args.path:
+        ui.err("give a file: `brain ocr <picture-or-pdf>` "
+               "(or `brain ocr --demo` to see it work)")
+        return 2
+    from pathlib import Path as _Path
+    try:
+        out = ocr.read(_Path(args.path), engine=args.engine)
+    except ocr.OcrError as exc:
+        ui.err(str(exc))
+        return 2
+    if args.json:
+        ui.emit(out)
+        return 0 if out.get("ok") else 1
+    text = out.get("text") or ""
+    if not text:
+        ui.err("no words found in that picture")
+        if out.get("note"):
+            ui.err(str(out["note"]))
+        return 1
+    print(text)
+    print()
+    print(f"[{out.get('engine')} · confidence {out.get('confidence')} · "
+          f"{out.get('glyphs', 0)} glyphs, {out.get('unsure_glyphs', 0)} unsure]",
+          file=sys.stderr)
+    if out.get("note"):
+        print(out["note"], file=sys.stderr)
     return 0
 
 
@@ -3296,12 +3521,37 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("text", nargs="*", help="detect the language of this text instead")
     sp.set_defaults(func=cmd_languages)
 
-    sp = sub.add_parser("calendar", help="read a .ics calendar (read-only, no login)")
+    sp = sub.add_parser("calendar", help="read a .ics calendar, or write a local one")
     sp.add_argument("--set", default="", metavar="PATH_OR_URL",
                     help="use this .ics file or secret iCal address")
     sp.add_argument("--when", default="today",
                     help="today | tomorrow | week | a weekday | a date")
+    sp.add_argument("--file", default="", metavar="PATH",
+                    help="the local .ics to write to (default: inside the vault folder)")
+    sp.add_argument("--add", default="", metavar="TITLE", help="add an event")
+    sp.add_argument("--start", default="", metavar="WHEN",
+                    help="2026-11-06 10:30 | 2026-11-06 | 'tomorrow 9am'")
+    sp.add_argument("--end", default="", metavar="WHEN", help="when it finishes")
+    sp.add_argument("--update", default="", metavar="UID", help="change the event with this UID")
+    sp.add_argument("--title", default=None, help="with --update: the new title")
+    sp.add_argument("--where", default=None, help="the place")
+    sp.add_argument("--note", default=None, help="a note, or with --update the new note")
+    sp.add_argument("--repeat", default="", metavar="RRULE",
+                    help="e.g. FREQ=WEEKLY;BYDAY=MO (a recurring event)")
+    sp.add_argument("--remove", default="", metavar="UID", help="remove the event with this UID")
+    sp.add_argument("--list", action="store_true", help="list the events in the local file")
     sp.set_defaults(func=cmd_calendar)
+
+    sp = sub.add_parser("ocr", help="read words out of a picture or a scanned PDF")
+    sp.add_argument("path", nargs="?", default=None, help="a .png picture or a .pdf")
+    sp.add_argument("--engine", default="auto", choices=["auto", "builtin", "tesseract"],
+                    help="which reader to use (auto prefers tesseract when installed)")
+    sp.add_argument("--engines", action="store_true", help="say which readers are installed")
+    sp.add_argument("--how", action="store_true", help="how to install the stronger reader")
+    sp.add_argument("--demo", nargs="?", const=True, default=False, metavar="TEXT",
+                    help="write a page with known words, read it back, and compare")
+    sp.add_argument("--out", default="", help="where --demo writes its page")
+    sp.set_defaults(func=cmd_ocr)
 
     sp = sub.add_parser("remind", help="reminders: set, list, done, snooze, cancel (offline)")
     # Not `choices=[...]`: the natural typing is `brain remind in 10 minutes to
@@ -3451,6 +3701,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--tag")
     add_auth(sp)
     sp.set_defaults(func=cmd_recall)
+
+    sp = sub.add_parser("search", help="find a memory by MEANING (needs a word-vector file)")
+    sp.add_argument("query", nargs="+")
+    sp.add_argument("--meaning", action="store_true",
+                    help="search by meaning instead of by matching words")
+    sp.add_argument("--wordvec", default="", metavar="FILE",
+                    help="the GloVe/word2vec .wordvec text file to read vectors from")
+    sp.add_argument("--limit", type=int, default=8)
+    sp.add_argument("--kind")
+    sp.add_argument("--tag")
+    add_auth(sp)
+    sp.set_defaults(func=cmd_search)
 
     sp = sub.add_parser("list", help="list memories")
     sp.add_argument("--kind")
