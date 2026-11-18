@@ -1,7 +1,7 @@
 # Nila — a local-first personal AI brain
 
-> **Windows user? Start with [`START_HERE.md`](START_HERE.md)** (v0.1 setup scripts, Ollama and
-> Gemini instructions). See [`ROADMAP.md`](ROADMAP.md) and [`PROGRESS.md`](PROGRESS.md).
+> **Windows user? Start with [`START_HERE.md`](START_HERE.md)** (v0.2: the six `.bat` files,
+> voice in/out, the phone window, Ollama and Gemini). See [`ROADMAP.md`](ROADMAP.md) and [`PROGRESS.md`](PROGRESS.md).
 > Note: since v0.1 the vault requires an authenticator code (`brain totp` once after `brain init`);
 > the passphrase alone is refused.
 
@@ -397,12 +397,14 @@ one prompt translates and says who translated it; with nothing configured Nila
 names the language, glosses the words she knows, and says plainly that a full
 translation needs a model. She never invents a meaning.
 
-    brain speak "வணக்கம்"               # SAPI on Windows, Piper if a voice file exists
+    brain speak "வணக்கம்"               # SAPI on Windows, Piper, or espeak-ng
+    brain speak --engines               # prove every engine with a real Tamil sentence
     brain speak --list-voices           # what Windows has installed
     brain speak --wav out.wav "..."     # write a file instead of speaking
 
-With no engine, `spoken` is false, a place-holder WAV is written, and the reason is
-stated - a silent no is better than a confident lie.
+With no engine, `spoken` is false, the reason and the exact fix are stated, and no
+place-holder audio is passed off as speech - a silent no is better than a confident
+lie. There is a section on all of this in stage 11, below.
 
 ## Calendar, read-only (v0.2, stage 3)
 
@@ -431,11 +433,16 @@ needs a free Google API key, kept in the sealed vault. Every one of them is a
 plain GET to a named host, so every one is gated by the same `net.host` permission
 as any other network call: one approval, one call, audited.
 
-    brain start                             # unlock and open the app, one command
+    brain dashboard                         # unlock once, and the app opens itself
 
-`brain start` replaces the old three steps (`unlock`, then `serve`, then copy the
-printed token). The token goes into the address the browser opens with, and
-`--show-token` prints it if you need it by hand.
+`brain dashboard` replaces the old three steps (`unlock`, then `serve`, then copy
+the printed token). It is what `start-nila.bat` runs: one passphrase, one
+authenticator code, then the browser is in front of you. The token goes into the
+address quietly (never into this window); `brain serve --show-token` prints it if
+you need it by hand, and `brain start` is still the terminal chat.
+
+    brain habit                             # days you really opened Nila, and the streak
+    brain fix                               # voice / hearing / microphone / phone: what is missing
 
 ## One voice (v0.2, stage 6)
 
@@ -494,20 +501,42 @@ away unused - they are never shown, forwarded or acted on.
 
 Three transcribers are recognised, most preferred first: **faster-whisper**,
 **openai-whisper** (best Tamil, slower on CPU) and **vosk** (50 MB, weakest Tamil).
-**None of them is installed by Nila** - downloading a model is the owner's decision:
+**None of them is installed by Nila** - downloading a model is the owner's decision,
+and one command does it and then proves it:
 
-    pip install faster-whisper
-    pip install openai-whisper
+    brain fix hearing           # check; prints what is missing and the exact line
+    brain fix hearing --apply   # install, then transcribe a test sentence for real
+
+    pip install faster-whisper  # or install it yourself
     pip install vosk            # plus a ta model from alphacephei.com
 
-Until one is installed, every command above says exactly that instead of pretending
-to listen. It is a wiring job waiting on one install, not a finished feature.
+`brain fix` separates the three honest outcomes: `missing` (nothing installed),
+`installed-waiting` (the package is there; its model downloads on first use, so a
+machine with no internet cannot prove it yet) and `working` (a sentence went in and
+text came out). It never reports `working` without the second half.
 
     brain launcher --talk --write       # a press-to-talk icon (not an always-on mic)
 
 One press listens once, for a bounded number of seconds, then closes. On Windows
 the same file also goes into the Startup folder, so the Win key then typing "Nila"
 reaches it. An always-on wake word is still refused by design.
+
+## Speaking Tamil (v0.2, stage 11)
+
+    brain speak "வணக்கம் நிலா"        # speak it
+    brain speak --voice ta "காலை வணக்கம்"
+    brain speak --engines            # speak a real Tamil sentence through EVERY engine
+    brain speak --wav out.wav "வணக்கம்"   # write a file instead of using a speaker
+
+Three engines, in this order: **Windows SAPI** (already on Windows), **Piper**
+(a binary plus a `ta` voice file) and **espeak-ng** (a system package). `--engines`
+does not ask "is it installed?" - it runs the real path per engine and reports how
+many bytes of audio came out, or the reason none did. A missing Tamil voice now
+*refuses* and prints the fix, instead of quietly speaking English.
+
+    tools/install_voice.py --espeak    # install espeak-ng and then prove it
+    tools/install_voice.py --check     # what is here, without installing anything
+    brain fix voice --apply            # the same thing, from one place
 
 ## Finding a file (v0.2, stage 7)
 
@@ -550,7 +579,7 @@ behaviour that was wrong, because that is what will be checked again.
 | A reminder 90 minutes away said `[in 0 min]` | minutes are rounded, not truncated: `[in 2 h]`, `[in 45 min]` |
 | A reminder seconds away showed a clock with no seconds | `[in 3 s]`, and the clock shows `%H:%M:%S` inside two minutes |
 | A reminder that just came due said `MISSED 0 min ago` | `MISSED just now` |
-| Nothing announced a reminder that came due while Nila was closed | `brain start` says it before opening the app; the **Nila Reminders** icon checks it (`brain remind --due --say`); the dashboard polls `/v1/reminders/due` every 2 s and shows a **Due now** box with a Done button |
+| Nothing announced a reminder that came due while Nila was closed | the app says it before opening the dashboard; the **Nila Reminders** icon checks it (`brain remind --due --say`); the dashboard checks `/v1/reminders/due` in its slow lane and shows a **Due now** box with a Done button |
 | "Nila remind me in 10 minutes to drink water" was refused by the icon | it is a spoken action now, parsed by code, no model |
 | A Gemini model name this key does not have failed with a raw 404 | the list is read from `/models` (chat models only), the configured name is kept if it exists, and a 404 is repaired once with a real name |
 | "Three months of memory, then let it go" did not exist | `brain memory --older-than 90` reports; `--purge --yes` deletes. Reminders, credentials, instructions and anything marked important are never purged, and nothing is scheduled |
@@ -596,11 +625,18 @@ message is queued, encrypted, in the vault (newest 50), and goes out on the next
 successful send or `brain telegram flush`. Reminders that came due, a failed
 action, a note when Nila starts and an issue report are the four kinds.
 
-**One way, by design.** Nila writes to your phone; she does not read replies. A
-bot that answers needs a process holding the connection open all day, and that is
-not built - `brain launcher --plan` says so next to the icon it would need.
+**Both ways, while the phone window is open.** `nila-phone.bat` (or
+`brain telegram listen`) holds the connection and answers messages from your
+phone: `/due`, `/list`, `/done 2`, `/snooze 2 10`, `/remind in 30 min …`,
+`/status`, `/help`, and free text goes through the same brain the terminal uses.
+Close the window and Telegram keeps the messages until you start it again - the
+reader saves its position in the vault, so a restart replays rather than drops.
 
-## How much of v2 is really finished (v0.2, stage 9)
+Only the one chat id in your vault is obeyed. A message from any other chat is
+dropped, counted and written to the audit log - never answered, never run, and
+never echoed back to you (an echo would dress a stranger's words up as Nila's).
+
+## How much of v2 is really finished (v0.2, stage 11)
 
     brain progress                      # every feature, with its real state
     brain progress next                 # the single most useful next step

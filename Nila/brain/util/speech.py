@@ -52,6 +52,22 @@ def find_piper() -> Optional[str]:
     return None
 
 
+def find_espeak() -> Optional[str]:
+    """espeak-ng, if it is installed.
+
+    This is the third engine and the one that made "Nila speaks Tamil" untrue on
+    Linux for a long time: SAPI is Windows-only and Piper needs BOTH a program and
+    a voice file, so a machine with neither could only write a tone. espeak-ng is
+    one apt/winget package, ships a Tamil voice, and - the point - its version can
+    be checked, so "it is installed" is a fact rather than a hope.
+    """
+    for name in ("espeak-ng", "espeak", "espeak-ng.exe", "espeak.exe"):
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
 def find_voice(directory: Optional[Path] = None) -> Optional[Path]:
     """The first Piper `.onnx` voice on disk."""
     dirs = [directory] if directory else list(VOICE_DIRS)
@@ -77,23 +93,30 @@ def engines(voice_dir: Optional[Path] = None) -> Dict[str, Any]:
     piper = find_piper()
     voice = find_voice(voice_dir)
     sapi = _is_windows() and shutil.which("powershell") is not None
+    espeak = find_espeak()
     return {
         "ok": True,
         "platform": platform.system(),
         "sapi": bool(sapi),
         "piper": piper or "",
         "piper_voice": str(voice) if voice else "",
+        "espeak": espeak or "",
         "wav_only": True,
-        "can_speak": bool(sapi or (piper and voice)),
+        #: the order `speak_text` will try, so a UI can show it before speaking
+        "order": [n for n, on in (("piper", bool(piper and voice)), ("sapi", bool(sapi)),
+                                  ("espeak", bool(espeak))) if on],
+        "can_speak": bool(sapi or (piper and voice) or espeak),
         "note": ("SAPI (Windows) speaks any installed voice; Piper speaks offline "
-                 "with a voice file you place; without either, Nila writes a WAV "
+                 "with a voice file you place; espeak-ng speaks offline out of the "
+                 "box, Tamil included. With none of the three, Nila writes a WAV "
                  "and says it could not speak."),
     }
 
 
 def speak_text(text: str, voice: str = "", offline: bool = True,
                voice_dir: Optional[Path] = None,
-               out_wav: Optional[Path] = None) -> Dict[str, Any]:
+               out_wav: Optional[Path] = None,
+               only: str = "") -> Dict[str, Any]:
     """Say something, or report honestly that nothing could say it.
 
     Returns ``{"ok", "spoken", "engine", "wav", "reason"}``. `spoken` is true
@@ -104,6 +127,16 @@ def speak_text(text: str, voice: str = "", offline: bool = True,
         return {"ok": False, "spoken": False, "engine": "", "wav": "",
                 "reason": "nothing to say"}
     found = engines(voice_dir)
+    if only:
+        # Test one engine on its own, so "which one actually made sound" is an
+        # answer and not a guess. Unknown names cannot silently do nothing.
+        if only not in ("piper", "sapi", "espeak"):
+            return {"ok": False, "spoken": False, "engine": only, "wav": "",
+                    "reason": f"unknown engine '{only}' (choose espeak, piper or sapi)"}
+        found = {**found, "piper": found["piper"] if only == "piper" else "",
+                 "piper_voice": found["piper_voice"] if only == "piper" else "",
+                 "sapi": found["sapi"] and only == "sapi",
+                 "espeak": found["espeak"] if only == "espeak" else ""}
 
     # ---- Piper first when a voice file exists: it is the offline Tamil path -- #
     if found["piper"] and found["piper_voice"]:
@@ -144,6 +177,31 @@ def speak_text(text: str, voice: str = "", offline: bool = True,
                 "reason": (proc.stderr or b"").decode("utf-8", "ignore")[:300]
                           or "SAPI failed (the voice name may not be installed)"}
 
+    # ---- espeak-ng: one package, Tamil included, works on every platform --- #
+    if found["espeak"]:
+        target = Path(out_wav) if out_wav else Path(tempfile.mkdtemp()) / "nila.wav"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            proc = subprocess.run(
+                [found["espeak"], "-v", voice or "ta", "-s", "150", "-w", str(target), clean],
+                capture_output=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"ok": False, "spoken": False, "engine": "espeak", "wav": "",
+                    "reason": f"espeak-ng could not run: {exc}"}
+        if proc.returncode == 0 and target.exists() and target.stat().st_size > 44:
+            return {"ok": True, "spoken": True, "engine": "espeak",
+                    "wav": str(target), "reason": "", "voice": voice or "ta"}
+        detail = (proc.stderr or b"").decode("utf-8", "ignore").strip()[:300]
+        if "not found" in detail or "Error" in detail:
+            # A missing Tamil voice must not silently fall back to English: say
+            # which voices this espeak actually has and how to add the one asked.
+            return {"ok": False, "spoken": False, "engine": "espeak", "wav": "",
+                    "reason": (detail or f"espeak-ng has no voice '{voice or 'ta'}'"),
+                    "fix": "install the language data, or use -v en and let Nila "
+                           "answer in English"}
+        return {"ok": False, "spoken": False, "engine": "espeak", "wav": "",
+                "reason": detail or "espeak-ng produced no audio"}
+
     # ---- nothing can speak: write a WAV and say so -------------------------- #
     target = Path(out_wav) if out_wav else Path(tempfile.mkdtemp()) / "nila.wav"
     try:
@@ -170,13 +228,62 @@ def _placeholder_tone(seconds: float = 0.12) -> List[float]:
 
 def piper_install_help() -> str:
     return (
-        "Offline voice (Piper):\n"
-        "  1. install the program:  pip install piper-tts\n"
-        "  2. put a Tamil voice in ~/.nila/voices/ (a .onnx and its .onnx.json)\n"
-        "  3. run: brain speak \"வணக்கம்\"\n"
-        "On Windows nothing needs installing: SAPI is built in, and\n"
-        "`brain speak --list-voices` shows the voices Windows already has."
+        "Offline voice, any of the three (first one that works is used):\n"
+        "  espeak-ng   one package, Tamil included, easiest on Linux/Windows:\n"
+        "              sudo apt install espeak-ng     (Windows: winget install "
+        "eSpeak-NG.eSpeak-NG)\n"
+        "  Piper       natural voice, needs BOTH the program and a voice file:\n"
+        "              pip install piper-tts, then put ta_IN .onnx + .onnx.json in "
+        "~/.nila/voices/\n"
+        "  SAPI        built into Windows, nothing to install (Sinhala/Tamil voices "
+        "depend on Windows)\n"
+        "Then: brain speak \"வணக்கம்\"     and check with: brain speak --engines"
     )
+
+
+def verify(voice: str = "ta") -> Dict[str, Any]:
+    """Actually try every engine and report what produced audio.
+
+    "It is installed" is not "it works": a Piper binary without a voice file, an
+    espeak without Tamil data, or a SAPI with only an English voice all fail at the
+    moment the owner expects to hear Tamil. This runs the real path with a short
+    sentence and reports, per engine, whether a WAV came out and how many bytes it
+    is - the same evidence a person gets by listening.
+    """
+    sample = "வணக்கம் நிலா" if str(voice).lower().startswith("ta") else "Hello Nila"
+    have = engines()
+    installed = {"espeak": bool(have["espeak"]), "piper": bool(have["piper"]),
+                 "sapi": bool(have["sapi"])}
+    rows: List[Dict[str, Any]] = []
+    for name in ("espeak", "piper", "sapi"):
+        started = _perf()
+        if not installed[name]:
+            rows.append({"engine": name, "installed": False, "spoken": False, "bytes": 0,
+                         "reason": "not installed on this machine",
+                         "ms": int((_perf() - started) * 1000)})
+            continue
+        try:
+            got = speak_text(sample, voice=voice, out_wav=Path(tempfile.mkdtemp()) / f"{name}.wav",
+                             only=name)
+        except Exception as exc:                 # a broken engine is a row, not a crash
+            got = {"ok": False, "spoken": False, "engine": name, "wav": "",
+                   "reason": f"{type(exc).__name__}: {exc}"}
+        rows.append({"engine": name, "installed": True, "spoken": bool(got.get("spoken")),
+                     "bytes": (Path(got["wav"]).stat().st_size
+                               if got.get("wav") and Path(got["wav"]).exists() else 0),
+                     "reason": str(got.get("reason") or "")[:200],
+                     "ms": int((_perf() - started) * 1000)})
+    working = [r["engine"] for r in rows if r["spoken"] and r["bytes"] > 44]
+    return {"ok": bool(working), "voice": voice, "sample": sample, "engines": rows,
+            "working": working,
+            "verdict": (f"speaks with: {', '.join(working)}" if working else
+                        "no engine produced audio for this sentence - see the per-engine "
+                        "reason and `brain speak --help`")}
+
+
+def _perf() -> float:
+    import time as _t
+    return _t.perf_counter()
 
 
 def sapi_voices() -> List[str]:

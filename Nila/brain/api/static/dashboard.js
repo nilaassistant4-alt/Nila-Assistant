@@ -148,7 +148,7 @@ function lockedOut(msg) {
       pass.value = totp.value = "";
       TOKEN = r.session_token; reloginShown = false;
       $("st").replaceChildren(el("div", "Unlocked again (" + r.mode + ").", "m okc"));
-      ls(""); tick(); loadProjects(); loadInstructions(); loadConnectors(); slow();
+      ls(""); tick(); panels(); loadProjects(); loadInstructions(); loadConnectors(); slow();
     } catch (e) {
       err.textContent = "Could not unlock: " + e.message;
       go.disabled = false;
@@ -202,7 +202,11 @@ function cxRow(r) {
   return row;
 }
 async function loadConnectors() {
-  const box = $("cx"); box.replaceChildren();
+  // The loading placeholder sits inside this box and has to go, or a connector
+  // panel that has already answered still reads "checking connectors...".
+  const box = $("cx");
+  if (box.firstChild && box.firstChild.classList && box.firstChild.classList.contains("skel")) box.replaceChildren();
+  else if (box.classList.contains("skel")) { box.classList.remove("skel"); box.replaceChildren(); }
   try {
     const st = await api("/v1/connectors");
     box.append(el("div", "signed in as " + st.auth_level +
@@ -381,9 +385,17 @@ async function ls(p) {
     const box = $("files"); box.replaceChildren();
     if (d.parent != null && d.path) { const u = el("div", "\u2b11 .."); u.onclick = () => ls(d.parent); box.append(u); }
     d.entries.forEach(e => { const x = el("div", (e.dir ? "\u25b8 " : "\u00b7 ") + e.name); if (e.dir) x.onclick = () => ls(e.path); box.append(x); });
-    if (!(d.roots || []).length) box.append(el("div", "No folders are shared with the dashboard. Add one with: brain config set agent.dashboard_roots \"[\\\"C:/Users/you/Documents\\\"]\"", "note"));
-    const miss = (d.roots || []).filter(r => !r.exists).map(r => r.configured);
+    // One folder, one command, no JSON escaping to get wrong when pasted. The
+    // old hint printed `[\"…\"]`, which the shell passes through with the
+    // backslashes and config then stores as a broken value.
+    if (!(d.roots || []).length) box.append(el("div", "No folders are shared with the dashboard. Add one with: brain config add-folder C:/Users/you/Documents", "note"));
+    // A folder YOU chose that has moved is a problem and is named. The three
+    // defaults that exist on most PCs are a guess, not a choice: when none of
+    // them is here the panel says "nothing chosen yet" and gives the command.
+    const chosen = (d.roots || []).filter(r => !r.default);
+    const miss = chosen.filter(r => !r.exists).map(r => r.configured);
     if (miss.length) box.append(el("div", "\u26a0 folder not found: " + miss.join(", "), "bad"));
+    if (!chosen.length) box.append(el("div", "Nothing is shared yet, so this list is empty on purpose.", "note"));
   } catch (e) { filesOk = false; $("path").textContent = "unavailable: " + e.message; }
 }
 
@@ -399,9 +411,29 @@ function sessionCountdown(raw) {
   return h ? h + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0")
            : m + ":" + String(s).padStart(2, "0");
 }
+// ---------------------------------------------------------------- freshness
+// One 2 s poll used to fire five requests and re-draw the audit log and the
+// session line whether or not anything had changed, and the numbers simply
+// froze when a request failed - indistinguishable from Nila being idle. Every
+// panel now records when it last received a real answer.
+const seen = {};
+function mark(name) { seen[name] = Date.now(); }
+function age(name) { return seen[name] ? (Date.now() - seen[name]) / 1000 : null; }
+document.addEventListener("visibilitychange", () => {
+  // A hidden tab must not keep polling a local vault: pause, then refresh once.
+  if (document.hidden) { clearInterval(fastTimer); clearInterval(slowTimer); }
+  else { tick(); slow(); startTimers(); }
+});
+let fastTimer = 0, slowTimer = 0;
+function startTimers() {
+  clearInterval(fastTimer); clearInterval(slowTimer);
+  fastTimer = setInterval(() => { if (!document.hidden) tick(); }, 5000);
+  slowTimer = setInterval(() => { if (!document.hidden) slow(); }, 20000);
+}
 async function tick() {
   try {
     const [s, mt] = await Promise.all([api("/v1/status"), api("/v1/metrics")]), m = mt.metrics;
+    mark("status"); mark("metrics");
     const cpu = m.cpu_pct != null ? m.cpu_pct : (m.load1 != null ? Math.round(m.load1 / (m.cpus || 1) * 100) : null);
     if (cpu != null) load = Math.min(1, cpu / 100);
     if (!filesOk && s.unlocked && s.session && !s.session.degraded) ls("");
@@ -415,6 +447,21 @@ async function tick() {
       st.append(el("div", "Session: " + s.session.mode + (s.session.degraded ? " (limited)" : " (full)") + " · " + expiry, "m"));
     }
     [bar(m.cpu_pct != null ? "CPU" : "Load avg", cpu), bar("Memory", m.mem_pct), bar("Disk", m.disk_pct), bar("Battery" + (m.plugged ? " \u26a1" : ""), m.battery_pct)].forEach(x => x && st.append(x));
+    st.append(el("div", "updated " + new Date().toLocaleTimeString(), "note"));
+  } catch (e) {
+    const expired = /401|expired|unauthor|423|locked/i.test(e.message);
+    if (expired) lockedOut(e.message);
+    else $("st").replaceChildren(el("span", "disconnected: " + e.message +
+      (age("status") != null ? " · showing data from " + Math.round(age("status")) + " s ago" : ""), "bad"));
+  }
+}
+
+// The log, due reminders and approvals change far more slowly than the clock,
+// and redrawing them every 2 s made the page steal focus and jump. They now
+// share the 20 s lane, together with everything else that is not a clock.
+async function panels() {
+  try {
+    const s = await api("/v1/status");
     const a = await api("/v1/audit?limit=10"), log = $("log"); log.replaceChildren();
     a.entries.slice().reverse().forEach(e => {
       // show the event and the ONE field that explains it; never the session
@@ -437,29 +484,32 @@ async function tick() {
         if (db) db.replaceChildren(...(due.due || []).map(r => {
           const d = el("div", "\u23f0 " + r.title + (r.late_minutes ? " \u00b7 " + r.late_minutes + " min late" : "") + " ", "bad");
           const b = el("button", "Done");
-          b.onclick = () => api("/v1/reminders/close", { id: r.id }).then(tick).catch(e => alert(e.message));
+          b.onclick = () => api("/v1/reminders/close", { id: r.id }).then(panels).catch(e => alert(e.message));
           d.append(b); return d;
         }));
-      } catch (e) { /* the next tick tries again */ }
+      } catch (e) { /* the next panels() tries again */ }
       const c = await api("/v1/consent"), cs = $("cs"); cs.replaceChildren();
       if (!c.pending.length) cs.textContent = "none";
       c.pending.forEach(p => {
         const d = el("div", p.label + " · " + p.scope + (p.purpose ? " — " + p.purpose : ""), "m");
         [["Allow once", "affirm"], ["Deny", "deny"]].forEach(([t, k]) => {
-          const b = el("button", t); b.onclick = () => api("/v1/consent/" + k, { id: p.id }).then(tick).catch(e => alert(e.message)); d.append(b);
+          const b = el("button", t); b.onclick = () => api("/v1/consent/" + k, { id: p.id }).then(panels).catch(e => alert(e.message)); d.append(b);
         });
         cs.append(d);
       });
     }
+    mark("panels");
   } catch (e) {
     const expired = /401|expired|unauthor|423|locked/i.test(e.message);
-    if (expired) lockedOut(e.message); else $("st").replaceChildren(el("span", "disconnected: " + e.message, "bad"));
+    if (!expired) $("log").replaceChildren(el("div", "audit unavailable: " + e.message, "bad"));
   }
 }
 const STATE_TEXT = { possible: "ready", needs_permission: "asks you first", needs_setup: "needs setup", blocked: "blocked", planned: "not built yet" };
 async function slow() {
   try {
-    const b = await api("/v1/budget"), bx = $("bud"); bx.replaceChildren();
+    const b = await api("/v1/budget"), bx = $("bud");
+    bx.classList.remove("skel");
+    bx.replaceChildren();
     if (!b.budgets.length) bx.textContent = "not used";
     b.budgets.forEach(x => {
       const d = el("div", x.provider + ": " + x.used + " of " + x.allowed + " requests today" + (x.cooldown_s ? " · paused " + x.cooldown_s + "s" : ""), "m"), p = document.createElement("progress");
@@ -476,6 +526,13 @@ async function slow() {
           : "Not set up. Run: brain telegram how", t.configured ? "m okc" : "m"));
         if (t.queued) ph.append(el("div", t.queued + " message(s) waiting for a connection", "m"));
         if (t.configured) {
+          // Both ways: the outbox is one half, the reader is the other, and the
+          // owner should be able to see which half is running without a terminal.
+          ph.append(el("div", t.last_update_id
+            ? "Answers from your phone: reading (last message #" + t.last_update_id + ")"
+            : "Answers from your phone: not running - double-click nila-phone.bat",
+            t.last_update_id ? "m okc" : "m warn"));
+          ph.append(el("div", "It answers only the chat above; any other chat is dropped and logged.", "note"));
           const b = el("button", "Send a test");
           b.onclick = () => api("/v1/telegram/test", {}).then(() => tick())
             .catch(e => alert(e.message));
@@ -483,6 +540,29 @@ async function slow() {
         }
       }
     } catch (e) { /* the next slow tick tries again */ }
+    // The streak: days the vault was really unlocked. A background tab does not
+    // count, so leaving the page open cannot inflate it.
+    try {
+      const h = await api("/v1/habit"), hb = $("habit");
+      if (hb) {
+        hb.replaceChildren();
+        hb.append(el("div", h.days_in_app
+          ? h.current_streak + " day" + (h.current_streak === 1 ? "" : "s") + " in a row"
+          : "Day one starts the first time you open Nila.", "m " + (h.today ? "okc" : "")));
+        const week = el("div", null, "week");
+        h.week.forEach(d => {
+          const cell = el("span", d.weekday[0], d.used ? "day used" : "day");
+          cell.title = d.date + (d.used ? " - opened" : " - not opened");
+          week.append(cell);
+        });
+        hb.append(week);
+        hb.append(el("div", h.days_in_app
+          ? h.days_in_app + " day" + (h.days_in_app === 1 ? "" : "s") + " in all"
+            + (h.best_streak > h.current_streak ? " · best " + h.best_streak : "")
+          : "nothing counted yet", "note"));
+        if (h.nudge) hb.append(el("div", h.nudge, "notice"));
+      }
+    } catch (e) { /* the panel keeps its own loading line */ }
     // Progress counts come from the code, not from a promise.
     try {
       const p = await api("/v1/progress"), v2 = $("v2");
@@ -502,6 +582,7 @@ async function slow() {
     h.health.forEach(i => {
       const row = el("div", i.name + ": " + i.detail, "m " + (i.status === "ok" ? "okc" : i.status === "warn" ? "warnc" : "bad")); if (i.fix) row.title = i.fix; hx.append(row);
     });
+    mark("slow");
   } catch (e) { /* the fast poll already shows a disconnected message */ }
 }
 $("rep").onclick = async () => {
@@ -511,10 +592,24 @@ $("rep").onclick = async () => {
 };
 
 // ---------------------------------------------------------------- background
-const cv = $("c"), g = cv.getContext("2d"); let N = [];
-function fit() { cv.width = cv.clientWidth; cv.height = cv.clientHeight; N = Array.from({ length: 70 }, () => ({ x: Math.random() * cv.width, y: Math.random() * cv.height, a: Math.random() * 6.28, p: Math.random() * 6.28 })); }
+// The canvas animation is decoration; it must never cost frames while the page
+// is hidden, and it must not run at all when the owner asks for less motion.
+const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const cv = $("c");
+// A browser can refuse a 2D context (hardened settings, no canvas support, a
+// device driver that fails). This is decoration: if it is unavailable the panel
+// must still work, because the whole script - every panel - runs below here.
+const g = cv && cv.getContext ? cv.getContext("2d") : null;
+let N = [];
+function fit() {
+  if (!g || !cv) return;
+  cv.width = cv.clientWidth; cv.height = cv.clientHeight;
+  N = Array.from({ length: 70 }, () => ({ x: Math.random() * cv.width, y: Math.random() * cv.height, a: Math.random() * 6.28, p: Math.random() * 6.28 }));
+}
 addEventListener("resize", fit); fit();
 (function f(t) {
+  if (!g) return;                       // no canvas: nothing to draw, panels unaffected
+  if (document.hidden || still) { requestAnimationFrame(f); return; }
   g.clearRect(0, 0, cv.width, cv.height); const sp = .3 + load * 2.2;
   N.forEach(n => { n.a += (Math.random() - .5) * .2; n.x = (n.x + Math.cos(n.a) * sp + cv.width) % cv.width; n.y = (n.y + Math.sin(n.a) * sp + cv.height) % cv.height; });
   for (let i = 0; i < N.length; i++) for (let j = i + 1; j < N.length; j++) { const d = Math.hypot(N[i].x - N[j].x, N[i].y - N[j].y); if (d < 110) { g.strokeStyle = "rgba(90,209,255," + ((1 - d / 110) * .45) + ")"; g.beginPath(); g.moveTo(N[i].x, N[i].y); g.lineTo(N[j].x, N[j].y); g.stroke(); } }
@@ -522,4 +617,11 @@ addEventListener("resize", fit); fit();
   requestAnimationFrame(f);
 })(0);
 $("stopnila").onclick = stopNila;
-ls(""); tick(); loadProjects(); loadInstructions(); loadConnectors(); slow(); setInterval(tick, 2000); setInterval(slow, 15000);
+// Boot: the two clock panels first (they answer in ~1 ms), then the slower
+// panels one lane at a time, so nothing waits behind the file listing.
+(async function boot() {
+  tick();
+  try { await panels(); } catch (e) { /* shown in its own lane */ }
+  loadProjects(); loadInstructions(); loadConnectors(); slow();
+  startTimers();
+})();

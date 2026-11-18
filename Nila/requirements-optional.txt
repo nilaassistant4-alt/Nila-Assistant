@@ -14,5 +14,11 @@ argon2-cffi>=23.1
 # Sync/update client (stdlib urllib is used otherwise)
 httpx>=0.27
 
+# Speech OUT (Tamil): Windows SAPI is built in; Piper is a binary + voice model;
+# espeak-ng is a system package (`tools/install_voice.py --espeak` installs it).
+# Speech IN: faster-whisper transcribes; the first run downloads a small model.
+faster-whisper>=1.0
+sounddevice>=0.4          # microphone capture (`brain ears --listen`); `brain fix mic`
+
 # Development
 pytest>=7.4

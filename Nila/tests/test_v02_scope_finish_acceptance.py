@@ -359,7 +359,11 @@ def test_the_two_d_bat_files_exist_and_are_windows_scripts():
         assert raw.startswith(b"@echo off")
         assert b"\r\n" in raw, "a .bat with LF endings can break on Windows"
         text = raw.decode("utf-8", "replace")
-        assert "python" in text and "pause" in text
+        # stage 11: the interpreter is chosen once, in nila-env.bat, so a machine
+        # with python2 first on PATH cannot pick the wrong one. The file still
+        # runs Python and still keeps its window open.
+        assert ("%NILA_PY%" in text or "python" in text) and "pause" in text
+        assert "brain.py" in text or "tools\\" in text
 
 
 def test_progress_counts_these_as_done():

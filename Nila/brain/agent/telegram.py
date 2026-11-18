@@ -3,12 +3,11 @@
 The owner's request was plain - "whatever it is, an update or a problem, I want it
 on Telegram" - and it hides three decisions that matter more than the code:
 
-**It is one-way to one chat.** A bot token alone can only message a chat that has
+**One chat, and it is sealed.** A bot token alone can only message a chat that has
 already spoken to the bot, so the chat id is fixed once, in the sealed vault, and
 every send goes to that id. There is no "send to whoever asked", no group, and no
-broadcast list. Two-way (the bot answering messages) needs a long-running process
-holding the connection open; it is not built and this module says so instead of
-pretending the bot is listening.
+broadcast list. This module is the *outbound* half; `brain.agent.phone` is the
+inbound half, and it also answers only that same chat id.
 
 **The token is treated like the passphrase.** It lives in the vault, never in
 config.json, never in a log and never in an error message: `masked()` is the only
@@ -118,15 +117,25 @@ class Telegram:
         return bool(self.token and self.chat_id)
 
     def status(self) -> Dict[str, Any]:
+        #: The reader is a separate process (`brain telegram listen`); the status
+        #: says whether the bridge is *set up* for it, and how far it has read.
+        offset = 0
+        try:
+            offset = int(self._meta("telegram_offset", 0) or 0)
+        except (TypeError, ValueError):
+            offset = 0
         return {"ok": True, "configured": self.configured,
                 "token": masked(self.token), "chat_id": self.chat_id or "not set",
                 "queued": len(self.pending()),
                 "host": HOST,
-                "one_way": True,
+                "one_way": False,
+                "reads_replies": True,
+                "last_update_id": offset,
+                "reader": ("nila-phone.bat" if offset else "not started yet"),
                 "note": (\
-                    "Nila sends to the one chat you chose. It does not read replies: "
-                    "a bot that answers needs a process holding the connection open, "
-                    "which is not built."),
+                    "Nila sends to the one chat you chose, and reads only that chat's "
+                    "messages while `brain telegram listen` is running. Anything from "
+                    "another chat is dropped, counted and audited - never answered."),
                 "how": _how_text()}
 
     def set_token(self, token: str) -> Dict[str, Any]:
@@ -370,6 +379,9 @@ def _how_text() -> str:
         "  3. `brain telegram whoami` prints your chat id (a number, like\n"
         "     987654321 or -100…). Then `brain telegram chat 987654321`.\n"
         "  4. `brain telegram test` - a real message should arrive on your phone.\n"
+        "  5. To answer from your phone, leave the phone window open: double-click\n"
+        "     `nila-phone.bat`, or run `brain telegram listen`. Then send /help to\n"
+        "     the bot and it replies with what it can do.\n"
         "The number question: a Telegram account is tied to a phone number, but the\n"
         "bot needs only the *chat id*, and that is what Nila stores. Nila never\n"
         "sees, asks for, or stores your phone number, and never your login."

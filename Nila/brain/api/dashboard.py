@@ -2,6 +2,7 @@
 and allowlisted file *names*. There is deliberately no read-content endpoint."""
 from __future__ import annotations
 
+import hashlib
 import os
 import platform
 import shutil
@@ -38,6 +39,15 @@ def asset(path: str) -> Optional[Tuple[bytes, str]]:
     return (f.read_bytes(), spec[1]) if f.is_file() else None
 
 
+def etag(data: bytes) -> str:
+    """Content hash, so a reload can be answered with 304 instead of 30 KB.
+
+    The page and script were sent `no-store` on every visit; with a hash the
+    browser revalidates with one small request and gets an empty 304 back.
+    """
+    return '"' + hashlib.sha256(data).hexdigest()[:20] + '"'
+
+
 def _configured(config) -> List[str]:
     raw = config.agent.get("dashboard_roots") or DEFAULT_ROOTS
     if isinstance(raw, str):
@@ -48,12 +58,21 @@ def _configured(config) -> List[str]:
 def root_status(config) -> List[Dict[str, Any]]:
     """Every configured folder and whether it exists, so a missing one is explained, not silent."""
     out = []
+    if not config.agent.get("dashboard_roots"):
+        # The defaults (Documents/Downloads/Pictures) are a guess about an owner
+        # this code has never met. On a PC where none of them exists, "Files on
+        # this PC" was simply empty and looked broken; saying "nothing chosen
+        # yet" - with the one command that chooses a folder - is the honest
+        # answer. A folder the owner chose and that has since moved keeps the
+        # plain "not found" wording, because that one IS a problem.
+        pass
     for r in _configured(config):
         try:
             ok = Path(r).expanduser().resolve().is_dir()
         except OSError:
             ok = False
-        out.append({"configured": r, "exists": ok})
+        out.append({"configured": r, "exists": ok,
+                    "default": not config.agent.get("dashboard_roots")})
     return out
 
 

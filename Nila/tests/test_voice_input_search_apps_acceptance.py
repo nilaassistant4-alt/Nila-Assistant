@@ -86,9 +86,12 @@ def test_the_status_says_what_is_missing_and_how_to_fix_it():
     status = ears.available()
     assert isinstance(status["engines"], list)
     assert set(status["engines"]).issubset(set(ears.ENGINES))
-    # Every engine named in the report has a copy-paste command, not a click.
+    # Every engine named in the report has a copy-paste command, not a click -
+    # and an installed engine says so rather than hiding the others.
     for line in status["how"].split(";"):
-        assert "install" in line or "no speech-to-text" in line
+        assert "install" in line or "installed" in line, line
+        if "installed" not in line:
+            assert "pip install" in line, line
     assert "whisper" in status["how"]
 
 

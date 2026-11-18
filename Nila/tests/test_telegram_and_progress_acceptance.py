@@ -170,13 +170,20 @@ def test_nothing_is_sent_before_a_chat_is_chosen(wire):
     assert not [c for c in calls if "sendMessage" in c["url"]]
 
 
-def test_two_way_is_declared_missing_not_implied():
+def test_the_reader_lives_in_its_own_module():
+    """The outbound bridge must not quietly start a conversation; the reader is
+    `brain.agent.phone`, and the status points at it honestly."""
     status = tg.Telegram(vault=Vault()).status()
-    assert status["one_way"] is True
-    assert "does not read replies" in status["note"]
-    source = inspect.getsource(tg)
-    assert "getUpdates" in source            # only to find the chat id,
-    assert "polling" not in source.lower()   # never to hold a conversation
+    assert status["one_way"] is False and status["reads_replies"] is True
+    assert "dropped" in status["note"] or "dropped" in status["note"].lower()
+    from brain.agent import phone
+
+    assert "getUpdates" in inspect.getsource(phone)
+    # the outbound module still calls it - to FIND the chat id, once - and the
+    # only other reader is the phone loop, which returns every message to the
+    # sealed chat id.
+    assert "getUpdates" in inspect.getsource(tg)
+    assert "run(" in inspect.getsource(phone)
 
 
 # --------------------------------------------------------------------------- #
@@ -444,9 +451,12 @@ def test_setup_bat_no_longer_asks_for_a_second_enrolment():
     from pathlib import Path
 
     bat = (Path(__file__).resolve().parents[1] / "setup.bat").read_text()
-    assert "python brain.py init" in bat
-    assert bat.count("python brain.py totp") == 1        # mentioned, not run
-    assert "python brain.py totp\r\n  if errorlevel" not in bat
+    # stage 11: the interpreter comes from nila-env.bat (`%NILA_PY%`), not a bare
+    # `python`, and the totp line is mentioned (not run) exactly once.
+    assert "brain.py init" in bat
+    assert "\"%NILA_PY%\" brain.py totp" in bat
+    assert bat.count("brain.py totp") == 1
+    assert "brain.py totp" not in bat.split("brain.py totp")[1].replace("\r\n", "\n").split("\n")[0].strip()
 
 
 def test_nila_announces_herself_on_the_phone_when_she_starts():

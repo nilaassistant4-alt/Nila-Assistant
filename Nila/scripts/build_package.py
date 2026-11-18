@@ -84,6 +84,14 @@ REQUIRED_FILES = [
     # v0.2 - the D-drive helpers the owner specified
     "move-to-d.bat", "backup-to-d.bat", "install-local-ai.bat",
     "tools/move_storage.py", "tools/backup_check.py", "tools/install_local_ai.py",
+    # stage 11 - the phone answers, and the .bat files are checked by a test
+    "nila-phone.bat", "nila-common-check.bat",
+    "brain/agent/phone.py", "brain/agent/fix.py", "brain/agent/__main_phone.py",
+    "tools/install_voice.py", "tests/test_bat_hygiene.py",
+    "tests/test_phone_two_way_acceptance.py",
+    # stage 11 polish: the streak, the one-command start, and the page actually run
+    "brain/agent/journal.py", "tests/test_habit_and_start_acceptance.py",
+    "tests/test_dashboard_dom.py", "tests/_dom_check.js",
 ]
 
 #: source trees whose .py files must ALL be present

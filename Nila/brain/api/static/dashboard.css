@@ -52,3 +52,16 @@ button.mini:hover { opacity: 1; }
 .banner{display:flex;gap:8px;align-items:center;justify-content:space-between;background:#2b2317;
   border:1px solid var(--warn);color:var(--warn);border-radius:8px;padding:6px 8px;margin:0 0 8px;font-size:12px}
 .banner button{background:var(--warn);color:#1a1a1a;font-weight:600}
+
+/* Loading placeholders: each panel says it is loading before its first answer
+   arrives, so an empty box never looks like "Nila found nothing". */
+.skel{color:var(--mu);font-size:12px;opacity:.75;animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.4}50%{opacity:.9}}
+@media (prefers-reduced-motion:reduce){.skel{animation:none}}
+
+/* The streak: seven little squares, today last. Deliberately plain - a bar chart
+   that looks like a game would push the owner to open the app just for the streak. */
+.week{display:flex;gap:4px;margin:6px 0}
+.week .day{width:20px;height:20px;display:flex;align-items:center;justify-content:center;
+  border-radius:4px;border:1px solid var(--mu);color:var(--mu);font-size:11px}
+.week .day.used{background:var(--ac);color:var(--bg);border-color:var(--ac)}

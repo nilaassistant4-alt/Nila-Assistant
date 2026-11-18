@@ -345,6 +345,18 @@ def cmd_status(args, ui: UI) -> int:
             "memory_db": str(config.memory_path),
             "audit_entries": len(vault.read_audit(10000)),
         })
+        # Two things an owner asks in the same breath as "is it set up?": does it
+        # start on its own, and have I actually been using it?
+        from ..agent import journal
+        from ..util import launcher
+
+        started = launcher.startup_status(config.home)
+        payload["starts_at_sign_in"] = {"enabled": bool(started.get("enabled")),
+                                        "where": started.get("where", ""),
+                                        "how": "brain launcher --add-startup"}
+        habit = journal.activity(vault)
+        payload["days_used"] = habit["days_in_app"]
+        payload["streak"] = habit["current_streak"]
         if args.unlock:
             passphrase = read_passphrase(args)
             try:
@@ -1286,6 +1298,43 @@ def cmd_restore(args, ui: UI) -> int:
     return 0
 
 
+def _config_add_folder(config: Config, raw: str, ui: UI) -> int:
+    """Share one folder with the dashboard, from a plain path.
+
+    A list value typed by hand needs JSON quoting: `["C:/x"]` pasted into a shell
+    arrives with the backslashes still in it, and the owner is left with a folder
+    that silently does not exist (found by pasting the dashboard's own hint).
+    """
+    folder = str(raw or "").strip().strip('"').strip("'")
+    if not folder:
+        return ui.err("which folder? brain config add-folder C:/Users/you/Documents")
+    try:
+        resolved = str(Path(folder).expanduser().resolve())
+    except OSError as exc:
+        return ui.err(f"that path cannot be used: {exc}")
+    if not Path(resolved).is_dir():
+        # Say it now instead of letting the dashboard show a folder that is not
+        # there; the owner may have meant to create it first.
+        return ui.err(f"{resolved} is not a folder on this PC (check the path, "
+                      "then run this again)")
+    current = config.agent.get("dashboard_roots") or []
+    if isinstance(current, str):
+        current = [p.strip() for p in current.split(",") if p.strip()]
+    shared = []
+    for entry in current:
+        try:
+            shared.append(str(Path(str(entry)).expanduser().resolve()))
+        except OSError:
+            continue
+    if resolved in shared:
+        ui.ok(f"{resolved} is already shared")
+        return 0
+    config.agent["dashboard_roots"] = [*current, resolved]
+    config.save()
+    ui.ok(f"the dashboard may now list {resolved} (names only, never contents)")
+    return 0
+
+
 def cmd_config(args, ui: UI) -> int:
     config = Config.load(args.home)
     stores = {"sync": config.sync, "updates": config.updates, "agent": config.agent,
@@ -1296,6 +1345,9 @@ def cmd_config(args, ui: UI) -> int:
                  "session_absolute_timeout": config.session_absolute_timeout,
                  **{k: v for k, v in stores.items()}})
         return 0
+    if args.action == "add-folder":
+        # The path is not a key, so it never reaches the section parser below.
+        return _config_add_folder(config, args.key, ui)
     if not args.key:
         return ui.err("usage: brain config set <section.key> <value>")
     section, _, name = args.key.partition(".")
@@ -1713,11 +1765,29 @@ def cmd_launcher(args, ui: UI) -> int:
         else:
             what = out["written"]["talk"]
             print(f"icon written: {what}")
-            if out["written"].get("startup"):
-                print(f"also in Startup: {out['written']['startup']}")
             print(f"runs: {out['runs']}  (listens for {out['seconds']:.0f} s, then closes)")
             print("\n" + out["note"])
         return 0
+    if args.add_startup or args.remove_startup:
+        # A shortcut in the owner's OWN startup folder - not a Windows service,
+        # not a scheduled task. `launcher.startup_status` is what `brain status`
+        # prints, so "it starts on its own" is never a claim without a file.
+        try:
+            if args.remove_startup:
+                out = launcher.remove_startup(config.home)
+            else:
+                out = launcher.write_startup(config.home)
+        except launcher.LauncherError as exc:
+            ui.err(str(exc))
+            return 2
+        if args.json:
+            ui.emit(out)
+        else:
+            ui.emit(out)
+            print("\n" + str(out.get("note", "")))
+            print("Undo any time with: brain launcher --remove-startup")
+        return 0 if out.get("ok") else 1
+
     if args.plan or not args.write:
         plan = launcher.plan(config.home)
         if args.json:
@@ -1727,8 +1797,12 @@ def cmd_launcher(args, ui: UI) -> int:
             for mode in plan["modes"]:
                 mark = "yes" if mode["works"] else "no "
                 print(f"  [{mark}] {mode['label']:<34s} {mode['how']}")
+            started = launcher.startup_status(config.home)
+            print(f"\nAt sign-in  : " + (f"yes - {started['where']}" if started.get("enabled")
+                                          else f"no - would be {started.get('where')}"))
             print("\n" + plan["limits"])
-            print("\nWrite the launchers with: brain launcher --write")
+            print("\nWrite the launchers with: brain launcher --write"
+                  "\nStart Nila at sign-in with: brain launcher --add-startup")
         return 0
     try:
         out = launcher.write_launchers(config.home,
@@ -1900,11 +1974,43 @@ def cmd_telegram(args, ui: UI) -> int:
             ui.emit(bridge.flush())
         elif action == "drop":
             ui.emit(bridge.drop_queue())
+        elif action == "poll":
+            # One round trip: read what the phone sent and answer it. This is the
+            # safe form - it returns, so a script or the dashboard can run it.
+            from ..agent.phone import PhoneBridge
+            from ..agent.agent import Brain
+
+            brain = Brain(config, vault, memory) if bridge.configured else None
+            loop = PhoneBridge(bridge, brain=brain, printer=ui.say)
+            ui.emit(loop.poll_once(timeout=0))
+        elif action in ("listen", "watch"):
+            # The long-poll loop. It owns the window until Ctrl+C, which is why
+            # it is a separate verb from `poll`.
+            from ..agent.phone import PhoneBridge
+            from ..agent.agent import Brain
+
+            if not bridge.configured:
+                ui.err("the phone bridge needs a token and a chat first: brain telegram how")
+                return 2
+            loop = PhoneBridge(bridge, brain=Brain(config, vault, memory),
+                               printer=ui.say)
+            ui.say(f"Nila is listening for chat {bridge.chat_id}. Ctrl+C stops it.")
+            result = loop.run(timeout=float(args.timeout or 25))
+            ui.emit(result)
+        elif action == "offset":
+            # Where the reader is: a reset makes Telegram replay, not lose, a
+            # message that arrived while Nila was closed.
+            from ..agent.phone import META_OFFSET
+
+            if args.value in ("reset", "0", "clear"):
+                vault.meta_set(META_OFFSET, 0)
+                ui.say("the next poll reads whatever Telegram still holds")
+            ui.emit({"ok": True, "offset": vault.meta_get(META_OFFSET, 0)})
         elif action in ("off", "clear"):
             ui.emit(bridge.clear())
         else:
             ui.err(f"unknown action '{action}'. Try: status, how, token, whoami, "
-                   "chat, notify, test, send, queue, flush, off")
+                   "chat, notify, test, send, poll, listen, offset, queue, flush, off")
             return 2
         return 0
     except TelegramError as exc:
@@ -1913,6 +2019,30 @@ def cmd_telegram(args, ui: UI) -> int:
     finally:
         memory.close()
         vault.lock()
+
+
+def cmd_habit(args, ui: UI) -> int:
+    """"Am I still keeping this up?" - the days Nila was really opened.
+
+    Counted from the audit journal (a real unlock), so a dashboard left open in a
+    background tab cannot inflate it. It reads history only: nothing is recorded
+    here and there is nothing extra to lose.
+    """
+    from ..agent import journal
+
+    config = Config.load(args.home)
+    vault = Vault(config)
+    payload = journal.activity(vault)
+    if args.json:
+        ui.emit(payload)
+        return 0
+    print(journal.line(payload))
+    week = "".join("#" if day["used"] else "." for day in payload["week"])
+    print(f"last 7 days  {week}   (# used, . not)")
+    if payload.get("nudge"):
+        print(payload["nudge"])
+    print(payload["note"])
+    return 0
 
 
 def cmd_progress(args, ui: UI) -> int:
@@ -2235,6 +2365,38 @@ def cmd_web(args, ui: UI) -> int:
     return 0
 
 
+def cmd_fix(args, ui: UI) -> int:
+    """Install and PROVE the missing pieces: voice out, hearing, microphone, phone.
+
+    One command instead of a document. `--check` writes nothing; the fixes ask
+    first, install into this exact interpreter, and then run the real path (a
+    Tamil sentence spoken, a sentence transcribed) so "done" means audio came out.
+    """
+    from ..agent import fix
+
+    what = (args.what or "").lower()
+    if what == "phone":
+        out = fix.phone_walkthrough()
+        ui.emit(out)
+        if not args.json:
+            print(out["detail"])
+            print(out["steps"])
+        return 0
+    out = fix.run(only=what if what not in ("", "all") else "",
+                  dry_run=args.dry_run, apply=bool(args.apply))
+    ui.emit(out)
+    if not args.json:
+        marks = {"working": "ok     ", "already": "ok     ", "done": "fixed  ",
+                 "missing": "missing", "failed": "FAILED ", "installed-untested": "untested",
+                 "would-install": "would  "}
+        for row in out["rows"]:
+            print(f"  {marks.get(row['status'], row['status']):<8} {row['target']:<8} "
+                  f"{str(row.get('detail'))[:90]}")
+        if out["next"]:
+            print(f"\nnext: {out['next']}")
+    return 0 if out["ok"] else 1
+
+
 def cmd_project(args, ui: UI) -> int:
     """The owner's v0.2 business work, on the command line.
 
@@ -2419,9 +2581,22 @@ def cmd_speak(args, ui: UI) -> int:
         else:
             ui.emit({"ok": True, "voices": voices})
         return 0
+    if getattr(args, "engines", False):
+        # Prove each engine with a real sentence instead of trusting `which`.
+        got = speech.verify(args.voice or "ta")
+        ui.emit(got)
+        if not args.json:
+            for row in got["engines"]:
+                print(f"  {row['engine']:<7} "
+                      + (f"spoke ({row['bytes']} bytes)" if row["spoken"]
+                         else ("not installed" if not row.get("installed")
+                               else f"failed: {row['reason'][:70]}")))
+            print("  " + got["verdict"])
+        return 0 if got["ok"] else 1
     text = " ".join(args.text or [])
     if not text:
-        ui.err("what should I say? e.g. `brain speak \"வணக்கம்\"`")
+        ui.err("what should I say? e.g. `brain speak \"வணக்கம்\"` "
+               "(or `brain speak --engines` to check the voice)")
         return 2
     res = speech.speak_text(text, voice=args.voice or "", out_wav=args.wav)
     ui.emit(res)
@@ -2840,6 +3015,23 @@ def cmd_permission(args, ui: UI) -> int:
     return ui.err(f"unknown permission action: {action}")
 
 
+def cmd_dashboard(args, ui: UI) -> int:
+    """The one command an owner runs: unlock once, then the app is in front of him.
+
+    Before this, starting Nila was two steps with a wall of JSON in between
+    (`brain start`, read the token, `brain serve --open`). The lock ceremony is
+    unchanged - passphrase, then the authenticator code - and a session left
+    open by a previous command is reused, so it is asked for once.
+    """
+    from ..api.gateway import serve
+
+    config, vault = open_vault(args)
+    memory = open_memory(config, vault)
+    return serve(config, vault, memory, host="127.0.0.1", port=int(args.port),
+                 token="", open_browser=not args.no_open, show_token=False,
+                 quiet_banner=True)
+
+
 def cmd_serve(args, ui: UI) -> int:
     from ..api.gateway import serve
 
@@ -2867,9 +3059,16 @@ def cmd_keygen(args, ui: UI) -> int:
 # parser
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="brain",
-                                description="Nila - a local-first, end-to-end encrypted "
-                                            "personal AI agent")
+    p = argparse.ArgumentParser(
+        prog="brain",
+        description="Nila - a local-first, end-to-end encrypted personal AI agent",
+        epilog=("Start here:  brain dashboard   (asks for your passphrase and code, "
+                "then opens the app)\n"
+                "             brain fix         (what is missing: voice, hearing, "
+                "microphone, phone)\n"
+                "             brain habit       (days you actually opened Nila)\n"
+                "             brain progress    (how much of v2 is really finished)"),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--home", default=None, help="BRAIN_HOME override (default ~/.personal-brain)")
     p.add_argument("--json", action="store_true", help="machine-readable output")
     p.add_argument("--quiet", action="store_true")
@@ -3014,6 +3213,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="write the press-to-talk icon instead of the start icon")
     sp.add_argument("--seconds", type=float, default=8.0,
                     help="how long one press listens (default 8)")
+    sp.add_argument("--add-startup", action="store_true",
+                    help="also start Nila when you sign in (a shortcut, not a service)")
+    sp.add_argument("--remove-startup", action="store_true",
+                    help="undo --add-startup")
     sp.set_defaults(func=cmd_launcher)
 
     sp = sub.add_parser("ears", help="hear you: speech to text (needs a transcriber)")
@@ -3080,11 +3283,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_auth(sp)
     sp.set_defaults(func=cmd_start)
 
-    sp = sub.add_parser("speak", help="say something out loud (SAPI / Piper, offline)")
+    sp = sub.add_parser("speak", help="say something out loud (espeak-ng / Piper / SAPI)")
     sp.add_argument("text", nargs="*", help="the words to say")
-    sp.add_argument("--voice", default="", help="a SAPI voice name")
+    sp.add_argument("--voice", default="", help="a voice: `ta`, `en`, or a SAPI voice name")
     sp.add_argument("--wav", default=None, help="write a WAV here instead of speaking")
     sp.add_argument("--list-voices", action="store_true", help="show installed voices")
+    sp.add_argument("--engines", action="store_true",
+                    help="try every engine with a real Tamil sentence and report which works")
     sp.set_defaults(func=cmd_speak)
 
     sp = sub.add_parser("languages", help="what Nila reads, and the two she answers in")
@@ -3187,16 +3392,26 @@ def build_parser() -> argparse.ArgumentParser:
     add_auth(sp)
     sp.set_defaults(func=cmd_remember)
 
-    sp = sub.add_parser("telegram", help="Nila writes to your phone (one chat, one way)")
+    sp = sub.add_parser("telegram", help="your phone and Nila, both ways (one chat)")
     sp.add_argument("action", nargs="?", default="status",
                     help="status | how | token | whoami | chat | notify | test | send | "
-                         "queue | flush | off")
+                         "poll | listen | offset | queue | flush | off")
     sp.add_argument("value", nargs="?", default="", help="the token, chat id, or kind")
     sp.add_argument("text", nargs="*", help="for `send`: the message")
     sp.add_argument("--on", action="store_true", help="with `notify`: turn it on")
     sp.add_argument("--timeout", type=float, default=15.0)
     add_auth(sp)
     sp.set_defaults(func=cmd_telegram)
+
+    sp = sub.add_parser("fix", help="install and prove the missing pieces "
+                                     "(voice, hearing, microphone, phone)")
+    sp.add_argument("what", nargs="?", default="",
+                    choices=["", "all", "voice", "hearing", "mic", "phone"])
+    sp.add_argument("--check", action="store_true", help="only report (the default)")
+    sp.add_argument("--apply", "--yes", dest="apply", action="store_true",
+                    help="install what is missing (asks nothing, downloads packages)")
+    sp.add_argument("--dry-run", action="store_true", help="say what would be installed")
+    sp.set_defaults(func=cmd_fix)
 
     sp = sub.add_parser("project", help="your business projects: idea, canvas, milestones")
     sp.add_argument("action", nargs="?", default="list",
@@ -3209,6 +3424,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--folder", default="", metavar="FOLDER", help="where `export` writes")
     add_auth(sp)
     sp.set_defaults(func=cmd_project)
+
+    sp = sub.add_parser("habit", help="days you actually opened Nila, and your streak")
+    add_auth(sp)
+    sp.set_defaults(func=cmd_habit)
 
     sp = sub.add_parser("progress", help="how much of v2 is really finished "
                                          "(reads the code only; no unlock needed)")
@@ -3301,7 +3520,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_restore)
 
     sp = sub.add_parser("config", help="read/write runtime config")
-    sp.add_argument("action", choices=["show", "get", "set"])
+    sp.add_argument("action", choices=["show", "get", "set", "add-folder"],
+                    help="add-folder takes a plain path: the dashboard may list it")
     sp.add_argument("key", nargs="?")
     sp.add_argument("value", nargs="?")
     sp.set_defaults(func=cmd_config)
@@ -3351,6 +3571,16 @@ def build_parser() -> argparse.ArgumentParser:
                     help="print the access token (avoid: it lands in terminal history)")
     add_auth(sp)
     sp.set_defaults(func=cmd_serve)
+
+    # One word. "start" used to mean "unlock in this terminal"; the thing an
+    # owner actually wants - open the app - is now this, and the terminal chat
+    # is the separate `brain chat`.
+    sp = sub.add_parser("dashboard",
+                        help="open Nila's dashboard in your browser (asks for the code once)")
+    sp.add_argument("--port", type=int, default=8765)
+    sp.add_argument("--no-open", action="store_true", help="do not open a browser")
+    add_auth(sp)
+    sp.set_defaults(func=cmd_dashboard)
 
     # Every subcommand accepts the unlock flags, whether or not it opens the
     # vault. The old build answered `brain memory report --passphrase-env PW`

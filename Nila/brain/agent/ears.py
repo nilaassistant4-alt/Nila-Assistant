@@ -28,7 +28,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from ..util.audio import AudioError, AudioSample, load_audio, record_microphone
+from ..util.audio import (AudioError, AudioSample, load_audio, record_microphone,
+                          write_wav)
 
 #: Transcribers, most preferred first, with what each needs.
 ENGINES = {
@@ -61,9 +62,12 @@ def available() -> Dict[str, Any]:
         "microphone": mic,
         "can_hear": bool(found),
         "can_record": bool(mic),
-        "how": ("" if found else
-                "no speech-to-text engine is installed; "
-                + "; ".join(f"{n}: {s['install']}" for n, s in ENGINES.items())),
+        # Always populated: `brain ears` must be able to say both "this one is
+        # installed" and "here is the line for the others", or the owner who has
+        # one engine never learns which is best for Tamil.
+        "how": "; ".join(
+            (f"{n}: installed" if n in found else f"{n}: install with {s['install']}")
+            for n, s in ENGINES.items()),
         "note": ("recording needs sounddevice; transcribing a WAV file does not "
                  "need a microphone at all"),
     }
@@ -165,6 +169,61 @@ def hear(seconds: float = 5.0, language: str = "ta", model_size: str = "small",
     out["rate"] = audio.sample_rate
     out["samples"] = audio.as_float_list()
     return out
+
+
+def self_test(language: str = "ta") -> Dict[str, Any]:
+    """Does hearing actually work on this machine? Not "is a module importable".
+
+    `available()` answers "is the package installed". The owner's question is
+    different: *can Nila hear a sentence*. Those part ways when a package is
+    present but its model cannot be downloaded, when a model needs internet once,
+    or when the microphone exists but records silence. So this synthesises the
+    speech itself (espeak-ng when present), transcribes it, and compares the words
+    - the same loop the owner will run, with nothing to type and no microphone.
+    """
+    from ..util import speech
+    from ..util.audio import SAMPLE_RATE
+
+    result: Dict[str, Any] = {"ok": False, "language": language, "steps": []}
+    found = available()
+    result["installed"] = found
+    if not found["can_hear"]:
+        result["reason"] = found["how"]
+        result["fix"] = "run: brain fix voice   (installs faster-whisper)"
+        return result
+
+    sentence = "வணக்கம் நிலா" if str(language).startswith("ta") else "hello nila"
+    spoken = speech.speak_text(sentence, voice=language or "ta")
+    result["steps"].append({"step": "make a sentence to listen to",
+                            "ok": bool(spoken.get("spoken")),
+                            "detail": spoken.get("reason") or spoken.get("engine", "")})
+    if not spoken.get("spoken"):
+        # No voice engine: a silent WAV still proves the transcriber loads, and
+        # saying that is more honest than reporting a failure of hearing.
+        path = Path(tempfile.mkdtemp()) / "silence.wav"
+        write_wav(path, [0.0] * int(SAMPLE_RATE * 1.0), SAMPLE_RATE)
+        result["steps"][-1]["detail"] = ("no voice engine to synthesise with, so a "
+                                         "second of silence was used instead")
+    else:
+        path = Path(spoken["wav"])
+    try:
+        heard = transcribe(load_audio(str(path)), language=language,
+                           model_size="tiny" if found["preferred"] != "vosk" else "small",
+                           engine=found["preferred"])
+    except EarsError as exc:
+        result["reason"] = str(exc)[:400]
+        result["fix"] = ("the package is installed but the model did not run - the "
+                         "first run downloads the model, so this needs internet once")
+        return result
+    result["steps"].append({"step": "transcribe it", "ok": True,
+                            "detail": f"{heard.get('engine')} -> {heard.get('text')!r}"})
+    result["heard"] = heard.get("text", "")
+    result["engine"] = heard.get("engine", "")
+    result["ok"] = True
+    result["note"] = ("the transcriber runs. With a voice engine installed the words "
+                      "above are the spoken sentence; with none, they are what silence "
+                      "sounds like (usually empty) - that is not a failure of hearing.")
+    return result
 
 
 def help_text() -> str:

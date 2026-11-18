@@ -61,14 +61,20 @@ FEATURES: List[Dict[str, Any]] = [
      "state": "partial", "check": "brain.agent.web:weather",
      "note": "built; live calls were never made from here (this sandbox has no "
              "network). YouTube search needs a free Google API key."},
-    {"group": "use", "label": "Speaks Tamil (Piper offline, or Windows SAPI)",
-     "state": "partial", "check": "brain.util.speech:speak_text",
-     "note": "the code is here; a voice file (Piper) or Windows is needed. On this "
-             "Linux box nothing can make sound."},
+    {"group": "use", "label": "Speaks Tamil (espeak-ng, Piper or Windows SAPI)",
+     "state": "partial", "check": "brain.util.speech:verify",
+     "note": "three engines are wired and each is TESTED with a real Tamil sentence "
+             "(`brain speak --engines`). One package (`brain fix voice`) or Windows "
+             "SAPI is all that is missing."},
     {"group": "use", "label": "Hears you (Whisper / faster-whisper / vosk)",
      "state": "partial", "check": "brain.agent.ears:hear",
-     "note": "the whole loop is wired; no transcriber or microphone is installed. "
-             "`pip install faster-whisper` plus `pip install sounddevice numpy`."},
+     "note": "the whole loop is wired and self-tested (`brain fix hearing`); the "
+             "package and microphone install in one command, and the model downloads "
+             "on its first use."},
+    {"group": "use", "label": "One command that fixes and PROVES the missing pieces",
+     "state": "done", "check": "brain.agent.fix:run",
+     "note": "`brain fix` checks, installs into this exact Python, then runs the real "
+             "path: a Tamil sentence spoken, a sentence transcribed."},
 
     # ---- files and the machine --------------------------------------- #
     {"group": "files", "label": "Reads any file: PDF, DOCX, XLSX, PPTX, code",
@@ -115,8 +121,11 @@ FEATURES: List[Dict[str, Any]] = [
      "note": "built, with an encrypted outbox when the phone is off. Needs a bot "
              "token and your chat id - `brain telegram how`."},
     {"group": "reach", "label": "Telegram two-way (you message the bot, it answers)",
-     "state": "missing",
-     "note": "needs a process holding the connection open all day; not built."},
+     "state": "partial", "check": "brain.agent.phone:PhoneBridge",
+     "note": "the reader is built and tested both ways: one chat only, sealed in the "
+             "vault, offset saved, /due /done /snooze /remind and free text through "
+             "the same brain as the terminal. What is missing is YOUR bot token and "
+             "chat id (`brain telegram how`), then `nila-phone.bat` keeps it open."},
 
     # ---- left out on purpose ----------------------------------------- #
     {"group": "later", "label": "Screen viewing (screenshot -> read it back)",
@@ -203,8 +212,7 @@ def next_step(rows: Optional[List[Dict[str, Any]]] = None) -> str:
     rows = rows or FEATURES
     partial = [r for r in rows if r.get("state") == "partial"]
     if any("Hears you" in r["label"] for r in partial):
-        return ("install a transcriber (pip install faster-whisper), then speak to "
-                "Nila for the first time")
+        return "run `brain fix` once - it installs the transcriber and proves it works"
     if any("phone" in r["label"].lower() for r in partial):
         return "give Nila a Telegram bot token so reminders reach your phone"
     missing = [r for r in rows if r.get("state") == "missing"

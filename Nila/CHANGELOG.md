@@ -1,5 +1,76 @@
 # Changelog
 
+## Unreleased — stage 11: voice in, Tamil out, phone both ways, dashboard, .bat (2026-11-04)
+
+### Added
+- **`brain.agent.phone` — Telegram, both ways.** A long-poll reader that answers
+  messages from the owner's phone: `/help`, `/due`, `/list`, `/done 2`,
+  `/snooze 2 10`, `/remind in 30 min …`, `/status`, and free text through the same
+  `Brain.handle` the terminal uses. Only the chat id sealed in the vault is obeyed:
+  a message from any other chat is dropped, counted and audited — never answered and
+  never echoed back. The update offset is saved in the vault, so a restart continues
+  instead of replaying; `brain telegram poll` does one round trip, `listen` loops.
+- **`nila-phone.bat`** — the window that keeps the phone answered (same Vault
+  ceremony as the CLI: passphrase, authenticator, recovery, idle lock).
+- **Speech out, verified.** `speech.verify()` (behind `brain speak --engines`) speaks
+  a real Tamil sentence through every engine and reports bytes or the reason; espeak-ng
+  joins SAPI and Piper; `tools/install_voice.py` installs and proves one.
+- **`brain fix [voice|hearing|mic|phone]`** — one command that checks, installs what
+  can be installed, then PROVES it, with `installed-waiting` for a package whose
+  model needs the network.
+- **Start at sign-in** — `brain launcher --add-startup/--remove-startup` writes a
+  shortcut in the owner's own Startup folder (`.vbs` on Windows, LaunchAgent on macOS,
+  `~/.config/autostart` on Linux). Not a service, and `brain launcher --plan` shows it.
+- **`nila-common-check.bat`** — one readable sentence when Python is missing, instead
+  of a window that flashes and closes.
+- **`tests/test_bat_hygiene.py`** (57 checks) — CRLF only, ASCII only, no BOM, quoted
+  `%~dp0` paths, `pause` on every double-clickable script, one `NILA_PY`, one
+  `BRAIN_HOME`.
+
+- **One command to start: `brain dashboard`.** It asks for the passphrase and the
+  authenticator code once, then opens the app; `start-nila.bat` runs it. Before
+  this, starting Nila ended with a wall of JSON and a second command.
+- **A habit streak that cannot be faked (`brain habit`, a dashboard panel).**
+  Days are counted from the audit journal's real unlocks, so a background tab is
+  not a day of use. Current and best streak, days in all, and the last seven days.
+- **`brain config add-folder <path>`.** The dashboard's own hint used to be a
+  `config set` with JSON quotes escaped for JavaScript; pasted, it stored a
+  broken value. Found by pasting it.
+- **`tests/test_dashboard_dom.py`** — the page is executed in a real DOM against
+  the real server, and every panel must leave its loading state.
+
+### Changed
+- **The dashboard polls less and says more.** Five requests every 2 s became two
+  clock panels every 5 s and the slow panels every 20 s; polling and the canvas
+  animation stop while the tab is hidden; every panel shows a *loading* skeleton
+  before its first answer; the system panel prints "updated HH:MM:SS", and a failed
+  request says "showing data from N s ago" instead of freezing silently.
+- **Static assets are revalidated, not re-downloaded** (`ETag` + `304`), and `HEAD`
+  is answered with the same status as `GET` instead of `501`.
+- **`ears.available()` always lists every engine** ("installed" or "install with …"),
+  so an owner with one engine still learns which is best for Tamil.
+- **Every `.bat`** now quotes `%~dp0`, uses `%NILA_PY%`, sets `chcp 65001`, and
+  reports the failing step; `START_HERE.md` was rewritten for v0.2 with a table of
+  the six files and a phone section.
+
+### Fixed
+- `brain telegram status` said the bot "does not read replies"; it now reports the
+  reader, the last update id, and that only one chat is read.
+- `brain launcher --plan` said Telegram could not carry commands in — it can now.
+- **A refused canvas context broke the whole dashboard** (found by running the page
+  in a DOM): the 2D animation threw at the top of `dashboard.js`, so every panel
+  stayed on "loading". Decoration now fails alone.
+- **Two panels never left "loading"** because their content was drawn *inside*
+  the loading placeholder (connectors and the online-AI budget).
+- **`brain launcher --talk` also wrote a copy into the Startup folder**, so
+  `brain talk` - a microphone - would have opened at every sign-in. Sign-in start
+  is now only the explicit `--add-startup`, and it starts the dashboard.
+- **Linux shortcuts did not quote a path with a space**, and a relative `brain.py`
+  was written when the home folder was relative.
+- **`python -m brain.agent.__main_phone` refused `--totp`**, so the phone window
+  could not get past the second factor it asks for.
+- `brain status` now reports whether Nila starts at sign-in, and the days used.
+
 ## Unreleased — #4 session rule, and the docs the build disagreed with (2026-11-04)
 
 ### Added

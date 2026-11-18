@@ -9,10 +9,10 @@
 <section id="left">
   <h2>Projects</h2>
   <div id="resume" class="note"></div>
-  <div id="plist"></div>
+  <div id="plist"><div class="skel">loading projects…</div></div>
   <div class="row"><input id="ptitle" maxlength="120" placeholder="New project or idea…"><button id="padd">Add</button></div>
   <div id="pdetail"></div>
-  <h2>Files on this PC</h2><div id="path"></div><div id="files"></div>
+  <h2>Files on this PC</h2><div id="path"></div><div id="files"><div class="skel">listing allowed folders…</div></div>
 </section>
 <section id="core">
   <canvas id="c"></canvas>
@@ -32,10 +32,10 @@
     <span id="bannertext"></span>
     <button id="bannerok">I am still here</button>
   </div>
-  <h2>System</h2><div id="st"></div>
-  <h2>Online AI today</h2><div id="bud">…</div>
+  <h2>System</h2><div id="st"><div class="skel">reading system…</div></div>
+  <h2>Online AI today</h2><div id="bud" class="skel">checking today's online budget…</div>
   <h2>Connectors</h2>
-  <div id="cx" class="notice">…</div>
+  <div id="cx"><div class="skel">checking connectors…</div></div>
   <div id="cxgate" hidden>
     <div class="notice" id="cxwhat"></div>
     <div class="row"><input id="cxpass" type="password" placeholder="passphrase (for this check only)"></div>
@@ -44,18 +44,19 @@
   </div>
   <div id="cxerr" class="notice"></div>
   <h2>Standing instructions</h2>
-  <div id="instr"></div>
+  <div id="instr"><div class="skel">loading instructions…</div></div>
   <div class="row"><input id="itxt" maxlength="280" placeholder="e.g. Call me Anna"></div>
   <div class="row"><button id="iadd">Add instruction</button></div>
   <div id="ierr" class="notice"></div>
   <h2>Due now</h2><div id="due"></div>
-  <h2>Late</h2><div id="late" class="note"></div>
-  <h2>Phone (Telegram)</h2><div id="phone"></div>
-  <h2>v2 progress</h2><div id="v2"></div>
+  <h2>Late</h2><div id="late" class="note"><span class="skel">checking late milestones…</span></div>
+  <h2>Phone (Telegram)</h2><div id="phone"><div class="skel">reading the phone bridge…</div></div>
+  <h2>Your habit</h2><div id="habit"><div class="skel">counting the days you showed up…</div></div>
+  <h2>v2 progress</h2><div id="v2"><div class="skel">counting what is done…</div></div>
   <h2>Approvals</h2><div id="cs">none</div>
-  <h2>Health</h2><div id="hl"></div><button id="rep">Full report</button><pre id="repbox" hidden></pre>
-  <h2>What Nila can do</h2><div id="caps"></div>
-  <h2>Audit log</h2><div id="log"></div>
+  <h2>Health</h2><div id="hl"><div class="skel">running health checks…</div></div><button id="rep">Full report</button><pre id="repbox" hidden></pre>
+  <h2>What Nila can do</h2><div id="caps"><div class="skel">listing capabilities…</div></div>
+  <h2>Audit log</h2><div id="log"><div class="skel">reading the audit log…</div></div>
   <div class="row"><button id="stopnila" class="mini">Stop Nila</button></div>
 </section>
 <script src="/dashboard.js"></script></body></html>

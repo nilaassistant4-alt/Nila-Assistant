@@ -553,6 +553,11 @@ class Gateway:
             except TelegramError as exc:
                 return 400, {"ok": False, "error": str(exc)}
             return 200, out
+        if path == "/v1/habit" and method == "GET":
+            # Days really opened (from the audit journal), never from a poll.
+            from ..agent import journal
+
+            return 200, journal.activity(self.vault, self.memory)
         if path == "/v1/progress" and method == "GET":
             # How much of v2 is really finished, measured against the code.
             from ..agent import progress
@@ -883,6 +888,16 @@ class Gateway:
 
 
 # --------------------------------------------------------------------------- #
+def _etag_match(header: str, tag: str) -> bool:
+    """True when the client already holds this exact asset (`*` or a list)."""
+    if not header:
+        return False
+    if header.strip() == "*":
+        return True
+    want = tag.strip('"')
+    return any(part.strip().strip('"') == want for part in header.split(","))
+
+
 class _Handler(BaseHTTPRequestHandler):
     gateway: Gateway = None          # set by serve()
     server_version = "personal-brain/0.1"
@@ -891,15 +906,17 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:   # keep stdout clean
         pass
 
-    def _send(self, status: int, payload: Dict[str, Any]) -> None:
+    def _send(self, status: int, payload: Dict[str, Any],
+              head_only: bool = False) -> None:
         data = json.dumps(payload, default=str).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", "0" if head_only else str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(data)
+        if not head_only:
+            self.wfile.write(data)
 
     def _authorized(self) -> bool:
         gw = self.gateway
@@ -914,10 +931,29 @@ class _Handler(BaseHTTPRequestHandler):
         port = self.server.server_address[1]
         return self.headers.get("Host", "") in (f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}")
 
-    def _send_static(self, data: bytes, ctype: str) -> None:
+    def _send_static(self, data: bytes, ctype: str, head_only: bool = False) -> None:
+        tag = dashboard.etag(data)
+        if head_only:
+            self.send_response(200)
+            for k, v in (("Content-Type", ctype), ("Content-Length", str(len(data))),
+                         ("ETag", tag), ("Cache-Control", "no-cache"),
+                         ("X-Content-Type-Options", "nosniff")):
+                self.send_header(k, v)
+            self.end_headers()
+            return
+        if _etag_match(self.headers.get("If-None-Match", ""), tag):
+            # A repeat visit costs one revalidation and no body: the page and the
+            # 30 KB script used to be re-downloaded on every open.
+            self.send_response(304)
+            for k, v in (("ETag", tag), ("Cache-Control", "no-cache"),
+                         ("Content-Length", "0")):
+                self.send_header(k, v)
+            self.end_headers()
+            return
         self.send_response(200)
         for k, v in (("Content-Type", ctype), ("Content-Length", str(len(data))),
-                     ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"),
+                     ("ETag", tag), ("Cache-Control", "no-cache"),
+                     ("X-Content-Type-Options", "nosniff"),
                      ("X-Frame-Options", "DENY"), ("Referrer-Policy", "no-referrer"),
                      ("Content-Security-Policy", dashboard.CSP),
                      ("Permissions-Policy", dashboard.PERMISSIONS)):
@@ -931,9 +967,15 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._host_ok():
             self._send(403, {"ok": False, "error": "bad Host header"})
             return
-        page = dashboard.asset(parsed.path) if method == "GET" else None
+        # HEAD was answered 501 by BaseHTTPRequestHandler, which made plain
+        # reachability checks (and some browser preflights) look like an outage.
+        head = method == "HEAD"
+        page = dashboard.asset(parsed.path) if method in ("GET", "HEAD") else None
         if page:
-            self._send_static(*page)
+            self._send_static(*page, head_only=head)
+            return
+        if head:
+            self._head_api(parsed.path)
             return
         if parsed.path not in ("/health",) and not self._authorized():
             self._send(401, {"ok": False, "error": "missing or invalid bearer token"})
@@ -973,6 +1015,26 @@ class _Handler(BaseHTTPRequestHandler):
             status, payload = 500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         self._send(status, payload)
 
+    def _head_api(self, path: str) -> None:
+        """Answer HEAD with the same status the GET would give, and no body."""
+        gw = self.gateway
+        if path not in ("/health",) and not self._authorized():
+            self._send(401, {"ok": False, "error": "missing or invalid bearer token"},
+                       head_only=True)
+            return
+        try:
+            status, _payload = gw.route("GET", path, {}, {})
+        except ApiError as exc:
+            status = exc.status
+        except PermissionError:
+            status = 423
+        except Exception:
+            status = 500
+        self._send(status, {}, head_only=True)
+
+    def do_HEAD(self) -> None:    # noqa: N802
+        self._handle("HEAD")
+
     def do_GET(self) -> None:     # noqa: N802
         self._handle("GET")
 
@@ -995,7 +1057,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 def serve(config: Config, vault: Vault, memory: MemoryStore, host: str = "127.0.0.1",
           port: int = 8765, token: str = "", open_browser: bool = False,
-          show_token: bool = False) -> int:
+          show_token: bool = False, quiet_banner: bool = False) -> int:
     gateway = Gateway(config, vault, memory, token=token or None)
     if host not in ("127.0.0.1", "localhost", "::1"):
         print(f"\033[31mrefusing to bind {host}: the API speaks plain HTTP and the bearer "
@@ -1010,23 +1072,30 @@ def serve(config: Config, vault: Vault, memory: MemoryStore, host: str = "127.0.
     httpd.daemon_threads = True
     actual_port = httpd.server_address[1]
     base = f"http://{host}:{actual_port}"
-    print(f"Nila is listening on {base}  (this computer only)")
+    if not quiet_banner:
+        print(f"Nila is listening on {base}  (this computer only)", flush=True)
     # The token is a credential. It is NOT printed by default: it would land in
-    # terminal scrollback and any log that captures the console. The browser
-    # receives it in the URL *fragment*, which is never sent to the server.
+    # terminal scrollback and any log, so the browser receives it in the URL
+    # *fragment*, which is never sent to the server (see `not printed` below).
     if show_token:
-        print(f"  dashboard: {base}/#{gateway.token}")
-        print(f"  bearer token: {gateway.token}")
+        # flush: stdout is a pipe whenever a .bat or a log captures this window,
+        # and a token sitting in a 4 KB buffer is a token the owner cannot see
+        # when he needs it (found by starting the app from a script).
+        print(f"  dashboard: {base}/#{gateway.token}", flush=True)
+        print(f"  bearer token: {gateway.token}", flush=True)
     elif open_browser:
         import threading
         import webbrowser
 
         threading.Timer(0.8, lambda: webbrowser.open(f"{base}/#{gateway.token}")).start()
-        print("  opening your browser… (token is passed privately, not printed)")
+        print(f"Nila is open at {base}  (this computer only)", flush=True)
+        print("  your browser is opening; the access token is passed privately, "
+              "never printed")
     else:
-        print("  start with --show-token to print the access link, or let "
-              "start-nila.bat open the browser for you")
-    print("  ctrl-c to stop (the session is locked on exit)")
+        print(f"Nila is listening on {base}  (this computer only)",
+              flush=True)
+        print("  add --open to put the dashboard in your browser", flush=True)
+    print("  ctrl-c (or closing this window) stops Nila and locks the vault", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
