@@ -1456,6 +1456,177 @@ def cmd_issue(args, ui: UI) -> int:
             memory.close()
 
 
+def cmd_voice(args, ui: UI) -> int:
+    """Enrol the one voice, check a sample, or show a challenge - vault-gated."""
+    from ..memory.vault import Vault as _V
+    from ..security.speaker import SpeakerError, SpeakerLock
+    from ..util import audio as _audio
+
+    config, vault = open_vault(args)
+    memory = open_memory(config, vault)
+    lock = SpeakerLock(config.home / "speaker.json", store=memory)
+    action = (args.action or "status").lower()
+    try:
+        if action == "status":
+            ui.emit({"ok": True, "enrolled": lock.enrolled(),
+                     "samples": len(lock.profile.get("samples") or []),
+                     "pitch_hz": lock.profile.get("pitch_median", 0),
+                     "threshold": round(lock.accept_threshold(), 3),
+                     "limits": __import__("brain.security.speaker",
+                                          fromlist=["LIMITS"]).LIMITS})
+            return 0
+        if action == "reset":
+            ui.emit(lock.reset())
+            return 0
+        if action in ("enrol", "enroll", "check"):
+            source = args.file
+            if source:
+                sample = _audio.load_audio(str(Path(source).expanduser()))
+                samples, rate = sample.samples, sample.rate
+            else:
+                sample = _audio.record_microphone(seconds=float(args.seconds or 3.0))
+                samples, rate = sample.samples, sample.rate
+            if action == "check":
+                decision = lock.judge(samples, rate)
+                ui.emit(decision.to_dict())
+                return 0 if decision.ok else 1
+            result = lock.enrol(samples, rate)
+            ui.emit({**result, "note": ("say it twice more to fit the threshold to "
+                                        "your voice: `brain voice enrol` again")})
+            return 0
+        if action == "challenge":
+            ui.emit(lock.challenge())
+            return 0
+        ui.err(f"unknown action '{action}'")
+        return 2
+    except (SpeakerError, _audio.AudioError) as exc:
+        ui.err(str(exc))
+        return 2
+    finally:
+        memory.close()
+        vault.lock()
+
+
+def cmd_file(args, ui: UI) -> int:
+    """Read whatever the owner hands over: document, code, image, video."""
+    from ..agent import media
+
+    if not args.path:
+        ui.err("give a file: `brain file <path>`")
+        return 2
+    try:
+        out = media.read_anything(Path(args.path).expanduser(), limit=args.limit)
+    except media.MediaError as exc:
+        ui.err(str(exc))
+        return 2
+    if args.json:
+        ui.emit(out)
+        return 0
+    if out.get("kind") == "document" and args.full:
+        print(out.get("text", ""))
+        return 0
+    if out.get("kind") == "document":
+        text = out.get("text", "")
+        print(f"{Path(args.path).name}: {out.get('format')}, {out.get('chars'):,} characters"
+              + ("  (truncated)" if out.get("truncated") else ""))
+        if out.get("note"):
+            print(out["note"])
+        print()
+        print(text[: args.preview])
+        return 0
+    if out.get("kind") == "video":
+        print(out.get("rendered"))
+        plan = out.get("edit_plan") or {}
+        if plan:
+            print("\nTo find the cuts (needs ffmpeg, one pass, no re-encode):")
+            print("  scenes  :", plan.get("scene_detect"))
+            print("  silence :", plan.get("silence_detect"))
+            print("  trim    :", plan.get("trim_without_reencode"))
+        return 0
+    print(out.get("rendered") or out)
+    return 0
+
+
+def cmd_storage(args, ui: UI) -> int:
+    """Where the archive lives - D: by the owner's choice, checked honestly."""
+    from ..config import StorageUnavailable
+
+    config = Config.load(args.home)
+    agent = dict(config.agent or {})
+    if args.set:
+        agent["storage_dir"] = str(Path(args.set).expanduser())
+        agent["storage_create"] = True
+        config.agent = agent
+        config.save()
+    if args.fallback_c:
+        agent["storage_fallback_to_c"] = bool(args.fallback_c == "on")
+        config.agent = agent
+        config.save()
+    if args.clear:
+        agent.pop("storage_dir", None)
+        agent.pop("storage_fallback_to_c", None)
+        config.agent = agent
+        config.save()
+    try:
+        path = config.memory_path
+    except StorageUnavailable as exc:
+        ui.emit({"ok": False, "error": str(exc),
+                 "configured": agent.get("storage_dir"),
+                 "fallback": bool(agent.get("storage_fallback_to_c"))})
+        return 1
+    exists = path.exists()
+    ui.emit({"ok": True, "store": str(path),
+             "configured": agent.get("storage_dir") or "(default: the Nila home folder)",
+             "fallback_to_c": bool(agent.get("storage_fallback_to_c")),
+             "exists": exists,
+             "size_mb": round(path.stat().st_size / 1048576, 2) if exists else 0,
+             "free_gb": _free_gb(path),
+             "note": ("Nila never deletes anything on its own. `brain forget <id>` "
+                      "removes one record; `brain backup` writes an encrypted copy.")})
+    return 0
+
+
+def _free_gb(path: Path) -> float:
+    import shutil as _sh
+
+    probe = path if path.exists() else path.parent
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    try:
+        return round(_sh.disk_usage(str(probe)).free / 1073741824, 1)
+    except OSError:
+        return 0.0
+
+
+def cmd_launcher(args, ui: UI) -> int:
+    """Make starting Nila one double-click (or one key press)."""
+    from ..util import launcher
+
+    config = Config.load(args.home)
+    if args.plan or not args.write:
+        plan = launcher.plan(config.home)
+        if args.json:
+            ui.emit(plan)
+        else:
+            print(f"Platform: {plan['platform']}")
+            for mode in plan["modes"]:
+                mark = "yes" if mode["works"] else "no "
+                print(f"  [{mark}] {mode['label']:<34s} {mode['how']}")
+            print("\n" + plan["limits"])
+            print("\nWrite the launchers with: brain launcher --write")
+        return 0
+    try:
+        out = launcher.write_launchers(config.home,
+                                       Path(args.out).expanduser() if args.out else None)
+    except launcher.LauncherError as exc:
+        ui.err(str(exc))
+        return 2
+    ui.emit(out)
+    if not args.json:
+        print("\n" + out["note"])
+    return 0
+
+
 def cmd_web(args, ui: UI) -> int:
     """The free connectors, from the command line."""
     from ..agent import web
@@ -2093,6 +2264,36 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--id", default=None, help="instruction id (for edit/remove)")
     add_auth(sp)
     sp.set_defaults(func=cmd_instruct)
+
+    sp = sub.add_parser("voice", help="the one enrolled voice: enrol, check, status")
+    sp.add_argument("action", nargs="?", default="status",
+                    choices=["enrol", "enroll", "check", "challenge", "status", "reset"])
+    sp.add_argument("--file", default="", help="a WAV to use instead of the microphone")
+    sp.add_argument("--seconds", type=float, default=3.0,
+                    help="how long to record (default 3)")
+    add_auth(sp)
+    sp.set_defaults(func=cmd_voice)
+
+    sp = sub.add_parser("file", help="read a document, code file, image or video")
+    sp.add_argument("path", nargs="?", default=None)
+    sp.add_argument("--limit", type=int, default=60000, help="max characters to read")
+    sp.add_argument("--preview", type=int, default=1500, help="characters to print")
+    sp.add_argument("--full", action="store_true", help="print the whole text")
+    sp.set_defaults(func=cmd_file)
+
+    sp = sub.add_parser("storage", help="where the archive lives (e.g. D:)")
+    sp.add_argument("--set", default="", metavar="FOLDER",
+                    help="use this folder, e.g. 'D:/Nila Assistant Storage'")
+    sp.add_argument("--clear", action="store_true", help="go back to the default folder")
+    sp.add_argument("--fallback-c", choices=["on", "off"], default=None,
+                    help="allow falling back to C: when the drive is missing")
+    sp.set_defaults(func=cmd_storage)
+
+    sp = sub.add_parser("launcher", help="an icon / hotkey that starts Nila")
+    sp.add_argument("--write", action="store_true", help="write the launcher files")
+    sp.add_argument("--plan", action="store_true", help="show what is possible here")
+    sp.add_argument("--out", default="", help="where to write them (default: Desktop)")
+    sp.set_defaults(func=cmd_launcher)
 
     sp = sub.add_parser("web", help="free connectors: weather, wikipedia, youtube, rss")
     sp.add_argument("what", nargs="?", default="pack",

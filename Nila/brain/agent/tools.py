@@ -11,6 +11,7 @@ import datetime as _dt
 import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ..security.permission import (
@@ -382,6 +383,35 @@ def build_default_registry() -> ToolRegistry:
         except Exception as exc:
             raise ToolError(f"cannot evaluate: {exc}") from exc
         return {"ok": True, "expression": expr, "result": value}
+
+    # -- files the owner hands over (stage 6) --------------------------- #
+    @reg.tool(
+        name="read_file_report",
+        description="Read a document (PDF, DOCX, XLSX, PPTX, text), a code file, an "
+                    "image or a video and report what it is, briefly. Never uploads.",
+        parameters={"type": "object", "properties": {
+            "path": {"type": "string"}}, "required": ["path"]},
+        risk="low", capability=CAP_FILE_READ, tags=["file", "offline"],
+    )
+    def read_file_report(ctx: ToolContext, path: str) -> Dict[str, Any]:
+        from . import media
+
+        if not str(path or "").strip():
+            return {"ok": False, "error": "give a path"}
+        return media.read_anything(Path(str(path)).expanduser())
+
+    @reg.tool(
+        name="analyse_video",
+        description="Report a video's size, duration, resolution and the exact "
+                    "ffmpeg commands that would find its cut points. Does not decode.",
+        parameters={"type": "object", "properties": {
+            "path": {"type": "string"}}, "required": ["path"]},
+        risk="low", capability=CAP_FILE_READ, tags=["video", "offline"],
+    )
+    def analyse_video(ctx: ToolContext, path: str) -> Dict[str, Any]:
+        from . import media
+
+        return media.analyze_video(Path(str(path)).expanduser())
 
     # -- free connectors (stage 5) ------------------------------------- #
     # Each of these is a plain GET to a named host, so each is gated by the same

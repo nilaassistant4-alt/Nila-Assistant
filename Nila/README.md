@@ -428,3 +428,46 @@ as any other network call: one approval, one call, audited.
 `brain start` replaces the old three steps (`unlock`, then `serve`, then copy the
 printed token). The token goes into the address the browser opens with, and
 `--show-token` prints it if you need it by hand.
+
+## One voice (v0.2, stage 6)
+
+    brain voice status                  # is a voice enrolled, and the threshold
+    brain voice enrol                   # record 3 seconds; run it 2-3 times
+    brain voice enrol --file me.wav     # or use a recording
+    brain voice check --file other.wav  # score a sample without acting on it
+
+Only the enrolled voice may start Nila, approve anything, or be listened to. The
+check combines the shape of the voice with its pitch, and the threshold is fitted
+to the owner's own recordings once there are two or more. A stranger, a short
+clip, or a noisy room is refused; an in-between match says "uncertain" and asks
+again. Anything that matters also asks for a spoken challenge number, so a
+recording of the owner cannot be replayed. `brain.security.speaker.LIMITS` says
+plainly what this is not: a trained speaker model.
+
+    brain launcher --plan               # what can start Nila on this machine
+    brain launcher --write              # an icon (and a hotkey recipe) on the Desktop
+
+A wake word that listens all day is deliberately **not** offered.
+
+## Any file (v0.2, stage 6)
+
+    brain file report.docx              # PDF, DOCX, XLSX, PPTX, text
+    brain file code.py                  # a one-screen map of any code file
+    brain file movie.mp4                # size, duration, and the edit commands
+
+Documents are read with the standard library - no dependency, no upload - and a
+scanned PDF is called scanned rather than shown as an empty page. A 10 GB video is
+never loaded into memory: the container is read by seeking, and finding every cut
+and silence is reported as the exact one-pass ffmpeg command, because that is a
+decode job and pretending otherwise would be a lie about what was analysed.
+
+## The archive on D (v0.2, stage 6)
+
+    brain storage --set "D:/Nila Assistant Storage"
+    brain storage                       # where it lives, size, free space
+    brain storage --fallback-c on       # allow C: if the drive is missing
+
+The encrypted store can live on any drive. If the drive is gone, Nila refuses
+instead of quietly creating an empty archive on C: - that would make a full
+history look deleted. Nothing is deleted on a schedule: `brain forget <id>`
+removes one record, when the owner says so.
