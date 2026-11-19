@@ -609,13 +609,17 @@ def main() -> int:
             return SKIP, f"no stage ZIP next to this checkout ({ROOT.parent.name})"
         zip_path = candidates[-1]
         # Stage 13 adds the four rows that were unfinished, and the file that
-        # proves each one so the check cannot pass on a stale ZIP.
+        # proves each one so the check cannot pass on a stale ZIP. Stage 14 adds
+        # the four files that make "the passphrase is asked once" true, because
+        # that claim is worthless if the ZIP an owner downloads is missing them.
         required = ("brain/agent/ears.py", "brain/agent/ocr.py",
                     "brain/agent/screen.py", "brain/agent/music.py",
                     "tools/sync_lan.py", "sync-host.bat", "sync-join.bat",
                     "sync-now.bat", "getffmpeg.bat", "brain/agent/ephemeral.py",
                     "brain/agent/wake.py", "brain/agent/progress.py",
-                    "config/integrations.example.json")
+                    "config/integrations.example.json",
+                    "brain/security/vaultkey.py", "brain/util/hotkey.py",
+                    "nila-first-run.bat", "nila-easy-start.bat")
         with zipfile.ZipFile(zip_path) as z:
             names = z.namelist()
             bad = [n for n in names if "__pycache__" in n or n.endswith(".pyc")]
@@ -1054,6 +1058,103 @@ def main() -> int:
 
     check("stage 13: a fourth device cannot join (one owner, a few devices)",
           device_ceiling)
+
+    def passphrase_once():
+        """Stage 14: the owner's own test - type it once, never again.
+
+        Deliberately uses a fake OS store: this sandbox has no Windows Credential
+        Locker, and a check that silently skipped on the owner's machine would be
+        worth nothing. The fake proves the *logic*; `brain passphrase status` on
+        his laptop proves the *store*.
+        """
+        from brain.security import vaultkey
+
+        saved: dict = {}
+
+        class Fake:
+            @staticmethod
+            def get_keyring():
+                return "fake store (retest)"
+
+            @staticmethod
+            def set_password(service, user, value):
+                saved[(service, user)] = value
+
+            @staticmethod
+            def get_password(service, user):
+                return saved.get((service, user))
+
+            @staticmethod
+            def delete_password(service, user):
+                saved.pop((service, user), None)
+
+        from brain.config import Config
+        from brain.memory.vault import Vault
+
+        real_keyring, real_dpapi = vaultkey._keyring, vaultkey._dpapi_available
+        vaultkey._keyring = lambda: Fake
+        vaultkey._dpapi_available = lambda: False
+        try:
+            cfg = Config.load(Path(home) / "once-pc")
+            cfg.fast_kdf = True
+            v = Vault(cfg)
+            v.initialize("retest-passphrase-2", "Owner", "dev-x")
+            v.lock()
+            opened = Vault(cfg)
+            mk = opened.unlock("retest-passphrase-2")
+            opened.lock()
+            remembered = vaultkey.save(mk, cfg.home)["saved"]
+
+            # a cold start: no passphrase anywhere, only the store
+            cold = Vault(cfg)
+            session = cold.unlock_with_master_key(vaultkey.load(cfg.home))
+            no_prompt = session.mode == "device-key"
+
+            # and "I forgot it" - set a new one with no old passphrase
+            cold.set_passphrase("written-down-9", mode="retest")
+            cold.lock()
+            fresh = Vault(cfg)
+            old_dead = not fresh.verify_passphrase("retest-passphrase-2")
+            new_works = fresh.verify_passphrase("written-down-9")
+            forgotten = vaultkey.forget(cfg.home)
+            asks_again = vaultkey.load(cfg.home) is None
+            ok = all([remembered, no_prompt, old_dead, new_works,
+                      forgotten["ok"], asks_again])
+            return (PASS if ok else FAIL,
+                    f"remembered={remembered}, cold start asked nothing={no_prompt}, "
+                    f"old passphrase refused={old_dead}, new one works={new_works}, "
+                    f"forget -> asks again={asks_again}")
+        finally:
+            vaultkey._keyring, vaultkey._dpapi_available = real_keyring, real_dpapi
+
+    check("stage 14: the passphrase is typed once, and a new one can be set "
+          "without the old", passphrase_once)
+
+    def one_key_or_the_voice():
+        """Stage 14: the two ways he asked to bring Nila up."""
+        from brain.util import hotkey, launcher
+
+        home2 = Path(home) / "easy-home"
+        home2.mkdir(parents=True, exist_ok=True)
+        (home2 / "brain.py").write_text("#")
+        plan = hotkey.voice_plan()
+        written = hotkey.write_hotkey_shortcut(home2, out_dir=Path(home) / "desk")
+        vbs = launcher.windows_vbs("python", "brain.py", str(home2), extra_args=["start"])
+        mic_at_signin_refused = False
+        try:
+            launcher.write_startup(home2, want_voice=True)
+        except launcher.LauncherError:
+            mic_at_signin_refused = True
+        bounded = plan["bounded_window_seconds"] <= 900
+        ok = bool(written["written"]) and bool(plan["wake_word"]) and bounded \
+            and mic_at_signin_refused and "start" in vbs
+        return (PASS if ok else FAIL,
+                f"shortcut written={len(written['written'])}, wake word={plan['wake_word']}, "
+                f"window<={plan['bounded_window_seconds']}s, "
+                f"microphone at sign-in refused={mic_at_signin_refused}")
+
+    check("stage 14: one key or your voice brings Nila up, microphone never at sign-in",
+          one_key_or_the_voice)
 
     memory.close()
     vault.lock()

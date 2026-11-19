@@ -144,8 +144,21 @@ def startup_path(name: str = STARTUP_NAME) -> Optional[Path]:
     return None
 
 
-def write_startup(home: Path, name: str = STARTUP_NAME) -> Dict[str, Any]:
-    """Create (or refresh) the sign-in launcher. Returns the path and what it runs."""
+def write_startup(home: Path, name: str = STARTUP_NAME,
+                  arguments: str = "start", want_voice: bool = False) -> Dict[str, Any]:
+    """Create (or refresh) the sign-in launcher. Returns the path and what it runs.
+
+    ``arguments`` is what the shortcut runs, and it is a parameter because the
+    owner's two requests are different: "start at sign-in" wants the dashboard up
+    quietly, while "the voice brings her" wants the microphone opened on purpose,
+    by hand, from an icon. Opening a microphone at every sign-in without anyone
+    asking is exactly what this build refuses, so the voice is never the default.
+    """
+    if want_voice and arguments == "start":
+        raise LauncherError(
+            "a sign-in shortcut must not open the microphone: that is an always-on "
+            "listener arriving through the Startup folder. Use the talk icon, or "
+            "`brain wake --window N`, which asks first and stops by itself.")
     target = startup_path(name)
     if target is None:
         raise LauncherError(f"this system ({platform.system()}) has no known start-at-sign-in place")
@@ -158,7 +171,8 @@ def write_startup(home: Path, name: str = STARTUP_NAME) -> Dict[str, Any]:
         # working directory, so a relative brain.py is the classic "it worked when
         # I double-clicked it" bug.
         script = str(brain_py.resolve()) if brain_py.exists() else "-m brain"
-        target.write_text(windows_vbs(py, script, str(Path(home).resolve())), encoding="utf-8")
+        target.write_text(windows_vbs(py, script, str(Path(home).resolve()),
+                                      extra_args=[arguments]), encoding="utf-8")
     elif system == "darwin":
         script = str(brain_py.resolve()) if brain_py.exists() else "-m brain"
         args = [f"<string>{py}</string>"]

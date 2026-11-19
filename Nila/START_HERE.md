@@ -7,9 +7,16 @@ Tamil out, your phone both ways, a better dashboard, and `.bat` files you can tr
 
 ## 1. One-time setup (about 5 minutes)
 
-1. Extract this ZIP to `C:\Nila` (right-click → **Extract All**).
+1. Extract this ZIP to `C:\Nila` (right-click → **Extract All**). You do this **once**;
+   after that, nothing needs extracting again.
 2. On your phone install **Google Authenticator** or **Microsoft Authenticator**.
-3. Double-click **`setup.bat`**. It will:
+3. **Double-click `nila-first-run.bat`** (not `setup.bat`). It runs setup, then makes
+   this laptop remember the key, then prints the plain answer to *will it ask me
+   again?*. **The passphrase is typed once here and never again on this laptop.**
+   Write the passphrase and the recovery codes on paper anyway: they are what opens
+   Nila on a **different** laptop, or after a reinstall of Windows.
+4. If you prefer the old way, `setup.bat` still works — it just does not remember
+   the laptop, so you would type the passphrase each time. `setup.bat` will:
    - check Python (3.10 or newer) and say so in one sentence if it is missing,
    - try to install the encryption helper (`cryptography`),
    - create your vault: choose a **long passphrase** and **write down the recovery codes**
@@ -20,11 +27,21 @@ Tamil out, your phone both ways, a better dashboard, and `.bat` files you can tr
 Your data lives in `%LOCALAPPDATA%\Nila\vault`, **outside** this folder. Replacing this folder
 with a newer version never touches your data.
 
+### Forgot the passphrase? You are not locked out
+- **This laptop still opens Nila** (the key is remembered): run
+  `python brain.py passphrase set` in `nila-cmd.bat` and choose a new one. Every
+  memory stays; the old passphrase stops working everywhere.
+- **It does not open, and you have a recovery code**: `start-nila.bat recovery`.
+- **Neither**: the vault cannot be opened by anyone, including me. That is why the
+  paper copy matters. `backup-to-d.bat` keeps a copy that a new laptop can restore.
+
 ## 2. Every day — the six files you double-click
 
 | File | What it does | When |
 |---|---|---|
-| `setup.bat` | one-time setup, safe to run twice | once |
+| `nila-first-run.bat` | setup + remember this laptop + check, in one double-click | once |
+| `nila-easy-start.bat` | shortcut, voice, check, then Nila | every day (the easy one) |
+| `setup.bat` | one-time setup on its own, safe to run twice | once |
 | `start-nila.bat` | starts Nila, opens the dashboard | every day |
 | `nila-phone.bat` | Nila **answers Telegram messages** from your phone | while you want the phone to work |
 | `nila-cmd.bat` | a command window with Nila's settings loaded | for `python brain.py …` |

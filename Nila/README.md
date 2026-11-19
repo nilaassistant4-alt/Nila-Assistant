@@ -44,9 +44,23 @@ python3 brain.py ask "what appointments do I have this week"
 python3 brain.py chat
 ```
 
-Every command that needs the vault will prompt for your passphrase. For scripts,
-use `--passphrase-env VAR` and put the passphrase in that variable — but see
-"Passphrase handling" below before relying on it.
+Every command that needs the vault asks for your passphrase **once per session**.
+On Windows, one extra step makes it *once, ever* on that laptop:
+
+```bat
+nila-first-run.bat          :: setup (if needed) + remember this laptop + check
+brain passphrase status     :: will it ask me again?  (a plain yes/no)
+brain lock-check            :: the same, with the four reasons on one screen
+brain hotkey --write        :: a desktop shortcut; set Ctrl+Alt+N on it once
+nila-easy-start.bat         :: everyday start: shortcut, voice, then Nila
+```
+
+`remember` stores the **master key** in the OS secret store (Windows Credential
+Locker, macOS Keychain, Linux Secret Service; on Windows, DPAPI per-user as a
+fallback) — never the passphrase. It is scoped to **you and this laptop**: another
+machine, or another Windows account, still needs the passphrase. Undo it with
+`brain passphrase forget`; a per-command `--no-saved-key` ignores it. For scripts,
+`--passphrase-env VAR` still works — but see "Passphrase handling" below.
 
 The unlock flags (`--passphrase-env`, `--totp`, `--recovery`) work on **every**
 subcommand and in **either** position: before the command, or after it.
@@ -334,8 +348,18 @@ of them behave the same way when you ask for it.
   tests, not for daily driving.
 - Never pass a passphrase as a literal command-line argument; it lands in shell
   history.
-- There is no recovery if you lose the passphrase **and** all recovery codes.
-  Write the recovery codes down somewhere offline during `init`.
+- **Forgot it, but this laptop still opens Nila?** You are not locked out: run
+  `brain passphrase set` and choose a new one. The saved device key already proves
+  it is your vault, so the old passphrase is not needed — and nothing is
+  re-encrypted, because the passphrase only wraps the master key. The old one
+  stops working afterwards, on every machine.
+- There is no recovery if you lose the passphrase **and** all recovery codes
+  **and** every machine that remembered the key (e.g. a dead laptop with no
+  backup). Write the recovery codes down somewhere offline during `init`, and keep
+  one `brain backup` copy on a USB disk.
+- "Remembered" means anyone at your unlocked desktop can open Nila. That is what a
+  key in the OS store is; the journal records `unlock_via_device_key` so the
+  difference between "he typed it" and "the laptop had it" is never lost.
 
 ---
 

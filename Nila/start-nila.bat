@@ -15,8 +15,15 @@ if not exist "%BRAIN_HOME%\identity.json" (
   pause
   exit /b 1
 )
-echo Starting Nila. It asks for your passphrase, then your authenticator
-echo code, and then opens the dashboard in your browser.
+rem The password question, answered in the window instead of in a document:
+rem after nila-first-run.bat this laptop remembers the key and nothing is asked.
+"%NILA_PY%" brain.py lock-check 2>nul | findstr /C:"no-password" >nul
+if errorlevel 1 (
+  echo This laptop will ask for your passphrase ^(and your code, if you set one^).
+  echo To stop that: double-click nila-first-run.bat once.
+) else (
+  echo Opening Nila. No passphrase needed on this laptop.
+)
 echo Close this window ^(or press Ctrl+C^) to stop Nila and lock the vault.
 echo.
 if /i "%~1"=="recovery" (

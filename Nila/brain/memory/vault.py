@@ -921,6 +921,64 @@ class Vault:
         self.audit("master_key_rotated", {"devices": len(self.data["devices"])})
         return {"devices": list(self.data["devices"]), "note": "now rekey memory records"}
 
+    # ------------------------------------------------------------------ #
+    # opening with the remembered device key, and setting a passphrase you
+    # do not know (the owner forgot his - this is the way back in)
+    # ------------------------------------------------------------------ #
+    def unlock_with_master_key(self, mk: bytes, mode: str = "device-key") -> Session:
+        """Open the vault from a key the OS store handed back, not from typing.
+
+        The same two checks the passphrase path makes, so a wrong or copied key
+        fails exactly like a wrong passphrase: unwrap nothing, verify the
+        verifier tag, and refuse. What it does NOT do is pretend a human typed
+        something - the session mode is ``device-key`` and the audit line says so,
+        which is how the journal can answer "was this opened by the saved key or
+        by the passphrase?".
+        """
+        if not self.initialized:
+            raise RuntimeError("vault not initialised")
+        if not self.data.get("devices", {}).get(self.device_id):
+            raise RuntimeError(f"this device ({self.device_id}) is not enrolled")
+        if len(mk) not in (16, 24, 32):
+            raise PermissionError("the saved device key is not a master key")
+        if not constant_time_eq(mac(mk, SESSION_TAG), b64d(self.data["verifier"])):
+            raise PermissionError(
+                "the saved device key does not match this vault - it was saved for "
+                "another vault, or the vault was re-keyed. Use `brain passphrase forget` "
+                "and type the passphrase once.")
+        self.register_success()
+        self.audit("unlock_via_device_key", {"device": self.device_id, "mode": mode})
+        # A MasterKey OBJECT, not bytes: the session, the store and the zeroise-on-
+        # lock path all share this one buffer, and handing them a plain bytes broke
+        # `brain status` with "object supporting the buffer API required" (found by
+        # running the CLI end to end, not by reading the code).
+        return self._start_session(MasterKey(bytes(mk)), mode=mode, degraded=False)
+
+    def set_passphrase(self, new: str, mode: str = "recovery") -> None:
+        """Give the vault a passphrase you can write down - old one not needed.
+
+        This is the honest answer to "I forgot the password". It requires an OPEN
+        vault: holding the master key in memory is proof enough to re-wrap it, and
+        that is the same trust boundary as an unlocked session. The passphrase is
+        re-derived (fresh salt, fresh scrypt parameters) for every device, so the
+        new one replaces the old everywhere rather than sitting beside it.
+        """
+        if not self._session:
+            raise RuntimeError("unlock the vault first (the saved device key is enough)")
+        if len(str(new or "")) < 8:
+            raise ValueError("a passphrase must be at least 8 characters - this is the "
+                             "one that protects everything if the laptop is lost")
+        mk = self._session.mk
+        self.data["kdf"] = self._new_kdf_params()
+        kek = self._kek(str(new))
+        for dev in self.data["devices"].values():
+            dev["kek_wrap"] = b64e(encrypt(mk, kek, aad=b"pbx/wrap/kek"))
+            dev["repassphrased_at"] = now_ms()
+        self.data["rotated_at"] = now_ms()
+        self.save()
+        self._kdf_cache.clear()
+        self.audit("passphrase_set", {"devices": len(self.data["devices"]), "mode": mode})
+
     def rotate_passphrase(self, old: str, new: str) -> None:
         mk = self.unlock(old)
         if len(new) < 8:

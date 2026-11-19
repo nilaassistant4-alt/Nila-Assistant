@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased — stage 14: the passphrase is typed once (2026-11-04)
+
+The owner unzipped the app, ran setup, and was asked for the passphrase at every
+start — and could not remember the one he had chosen; when he tried to change it,
+the old one still worked. Three bugs and one missing feature were behind that
+sentence, and all four are fixed here.
+
+### Fixed
+- **It asked every time.** Nothing was ever remembered, so each command started
+  cold and prompted. A device key now does the unlocking: `brain/security/vaultkey.py`
+  puts the **master key** (not the passphrase) in the OS secret store — Windows
+  Credential Locker via `keyring`, macOS Keychain, Linux Secret Service — and on
+  Windows falls back to a per-user **DPAPI** blob at `BRAIN_HOME/device-key.dpapi`
+  when `keyring` is absent. `open_vault` tries it before prompting.
+- **A wrong saved key would have counted as a failed login** and locked the owner
+  out of his own re-keyed vault. It now warns once and falls through to the
+  passphrase without touching the failure counter.
+- **`set_passphrase` was the missing half of "change my password".** `rotate_passphrase`
+  existed but required the old passphrase — useless to someone who forgot it. The
+  new path needs only an **open** vault: it re-wraps the same master key for every
+  device with a fresh salt and fresh scrypt parameters, so the old passphrase is
+  refused afterwards and every memory still opens (nothing is re-encrypted).
+- **`unlock_with_master_key` returned bytes where the session needed a `MasterKey`**
+  — caught by running the CLI end to end (`brain status` died with "object
+  supporting the buffer API required"), not by reading the code.
+
+### Added
+- **`brain passphrase status|remember|forget|set`** — the plain answers: "will it
+  ask me next time?", "stop asking", "start asking again", "I forgot it, give me a
+  new one".
+- **`brain lock-check`** — one screen, four facts, and the sentence the owner
+  actually wanted: what the next start will do.
+- **`nila-first-run.bat`** — setup if needed, then remember, then check. And
+  **`nila-easy-start.bat`** — the everyday one: shortcut, voice, check, then Nila.
+- **`brain hotkey`** (`--write`, `--startup`, `--no-startup`, `--voice`) and
+  `brain/util/hotkey.py` — a real `.lnk` written through `WScript.Shell` that runs
+  `nila-start.vbs` (no console window), with Windows' own "Shortcut key" dialog as
+  the one step left to the owner. A sign-in shortcut is the dashboard only:
+  `write_startup(want_voice=True)` raises rather than install an always-on
+  microphone through the Startup folder.
+- **`start-nila.bat` says which of the two it is** — "no passphrase needed on this
+  laptop" or "double-click nila-first-run.bat once" — instead of always promising a
+  prompt.
+
+### Not claimed
+- Anyone at an unlocked desktop can open Nila once the key is remembered. That is
+  what the OS store is; the journal records `unlock_via_device_key` so "he typed
+  it" and "the laptop had it" are never confused.
+- `keyring` is not installed in the Linux sandbox, so the OS store itself is
+  tested against a fake; the Windows DPAPI path is tested for its refusal messages
+  and its absence, not for a successful round trip (that needs Windows).
+
 ## Unreleased — stage 13: the three "not built" rows and the partials, finished (2026-11-04)
 
 Every row below was reported as built while a part of it was not. The pattern is

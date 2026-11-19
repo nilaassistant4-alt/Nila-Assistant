@@ -115,6 +115,68 @@ def read_totp(args, prompt: str = "authenticator code (6 digits): ") -> str:
     return input(prompt).strip()
 
 
+#: The last complaint from the saved device key, so a later prompt can mention it
+#: once instead of swallowing it. Never printed twice, never raised.
+_SAVED_KEY_WARNING: List[str] = []
+
+
+def _saved_key_problem(message: str, fix: str) -> None:
+    _SAVED_KEY_WARNING[:] = [f"{message} (fix: {fix})"]
+
+
+def take_saved_key_warning() -> str:
+    """The saved-key complaint, once. Printing it on every command would be noise."""
+    return _SAVED_KEY_WARNING.pop() if _SAVED_KEY_WARNING else ""
+
+
+def _finish_open(config: Config, vault: Vault, mk: bytes, args, mode: str,
+                 require_second_factor: bool = True, allow_setup: bool = False) -> None:
+    """Start the session once the master key has been proven.
+
+    Split out of ``open_vault`` because there are now two ways to prove it (the
+    passphrase, and a key the OS store handed back) and the second-factor rules
+    differ between them: a passphrase is a secret that can be typed by anyone,
+    while a device key is already bound to this logged-in account - so it is
+    treated as the possession factor and does not require the authenticator again.
+    """
+    vault.register_success()
+    if require_second_factor:
+        policy = vault.policy()
+        secret = vault.load_totp_secret()
+        has_voice = vault.has_voice()
+        override = bool(policy.get("allow_degraded"))
+        if secret:
+            code = read_totp(args)
+            from ..identity.totp import counter_for
+
+            counter = counter_for(secret, code, min_counter=vault.totp_last_counter())
+            if counter < 0:
+                w = vault.register_failure("bad-totp")
+                vault.discard_provisional()
+                raise SystemExit("invalid or already-used authenticator code"
+                                 + (f" (locked out {w}s)" if w else ""))
+            vault.mark_totp_used(counter)
+            mode, degraded = "totp", has_voice
+        elif has_voice and not (override or allow_setup):
+            vault.discard_provisional()
+            raise SystemExit("second factor required: run `brain unlock --voice <wav>`, "
+                             "or enrol an authenticator with `brain totp`")
+        elif not (override or allow_setup):
+            # The v0.1 rule, and it is not decoration: a passphrase is one thing
+            # you know, and one thing is not two. Only the setup commands that
+            # enrol the missing factor are let through this door.
+            vault.discard_provisional()
+            raise SystemExit("no second factor is enrolled, so the passphrase alone is "
+                             "refused. Run `brain totp` once to enrol an authenticator app.")
+        else:
+            mode = mode if override else "setup"
+            degraded = has_voice
+    else:
+        degraded = False
+    vault.start_session(mk, mode=mode, degraded=degraded)
+    vault.audit("session_unlock", {"mode": mode, "degraded": degraded, "via": "cli"})
+
+
 def open_vault(args, require_unlocked: bool = True, mode: str = "passphrase",
                allow_setup: bool = False) -> tuple:
     """Open the vault. FAIL CLOSED on the second factor.
@@ -137,6 +199,35 @@ def open_vault(args, require_unlocked: bool = True, mode: str = "passphrase",
         locked, wait = vault.locked_out()
         if locked:
             raise SystemExit(f"locked out after failed attempts; retry in {wait}s")
+        # THE REMEMBERED DEVICE KEY COMES FIRST. The owner asked for this in so
+        # many words: "type the password once at first run, and after a restart
+        # it must not ask again". It is checked before the passphrase prompt, it
+        # is audited as `unlock_via_device_key`, and it is the model the
+        # authenticator then sits on top of - a key the OS hands back to THIS
+        # logged-in user is a possession factor, which is exactly the thing a
+        # second factor is meant to sit beside.
+        if not getattr(args, "no_saved_key", False):
+            from ..security import vaultkey
+
+            saved = vaultkey.load(config.home)
+            if saved:
+                try:
+                    session = vault.unlock_with_master_key(saved)
+                except (PermissionError, RuntimeError) as exc:
+                    # A key that no longer matches is a fact about the vault, not a
+                    # failed login: do NOT count it as an attempt, or a re-keyed
+                    # vault would lock the owner out of his own laptop.
+                    ui_hint = (str(exc), "brain passphrase forget")
+                    saved = None
+                    _saved_key_problem(*ui_hint)
+                else:
+                    # `unlock_with_master_key` already opened a session with this
+                    # key; `_finish_open` reconfigures the SAME live key (which
+                    # `start_session` recognises and keeps), so nothing is unlocked
+                    # twice and the second factor is not asked for again.
+                    _finish_open(config, vault, session.mk, args, mode="device-key",
+                                 require_second_factor=False)
+                    return config, vault
         passphrase = read_passphrase(args)
         try:
             mk = vault.unlock(passphrase)
@@ -157,41 +248,42 @@ def open_vault(args, require_unlocked: bool = True, mode: str = "passphrase",
             vault.meta_set("re_enrollment_required", True)
             session_mode = "recovery"
             degraded = True
-        elif secret:
-            code = read_totp(args)
-            # ONE-TIME at the CLI too. `totp_verify` alone checks the maths, so
-            # the same 6 digits unlocked command after command inside their
-            # 30-second window; the API ceremony was fixed for this (audit B6)
-            # but the main human route was not. Spend the step, then verify.
-            from ..identity.totp import counter_for
-
-            counter = counter_for(secret, code, min_counter=vault.totp_last_counter())
-            if counter < 0:
-                w = vault.register_failure("bad-totp")
-                vault.discard_provisional()
-                raise SystemExit("invalid or already-used authenticator code"
-                                 + (f" (locked out {w}s)" if w else ""))
-            vault.mark_totp_used(counter)
-            session_mode = "totp"
-            # "degraded" means a STRONGER factor exists and was not used - not
-            # that none exists (that was a dead end for owners without a voiceprint).
-            degraded = has_voice
-        elif has_voice and not (override or allow_setup):
-            vault.discard_provisional()
-            raise SystemExit("second factor required: run `brain unlock --voice <wav>`, "
-                             "or enrol an authenticator with `brain totp`")
-        elif not (override or allow_setup):
-            vault.discard_provisional()
-            raise SystemExit("no second factor is enrolled, so the passphrase alone is "
-                             "refused. Run `brain totp` once to enrol an authenticator app.")
+            vault.register_success()
+            vault.start_session(mk, mode=session_mode, degraded=degraded)
+            vault.audit("session_unlock", {"mode": session_mode, "degraded": degraded,
+                                           "via": "cli"})
+            _remember_after_passphrase(config, vault, mk, args)
         else:
-            session_mode = mode if override else "setup"
-            degraded = has_voice
-        vault.register_success()
-        vault.start_session(mk, mode=session_mode, degraded=degraded)
-        vault.audit("session_unlock", {"mode": session_mode, "degraded": degraded,
-                                       "via": "cli"})
+            _finish_open(config, vault, mk, args, mode=mode,
+                         require_second_factor=True, allow_setup=allow_setup)
+            _remember_after_passphrase(config, vault, mk, args)
     return config, vault
+
+
+def _remember_after_passphrase(config: Config, vault: Vault, mk: bytes, args) -> None:
+    """Save the device key once, the first time a passphrase actually works.
+
+    This is the "type it once" half of the owner's request, and it is why the
+    second start and every restart after it is silent. It never overwrites a key
+    that is already saved (a working device key is not re-sealed on every run),
+    it can be turned off entirely with ``--no-saved-key`` or
+    ``brain passphrase forget``, and the audit line records that it happened.
+    """
+    if getattr(args, "no_saved_key", False):
+        return
+    from ..security import vaultkey
+
+    if vaultkey.load(config.home):
+        return
+    which = vaultkey.backend(config.home)
+    if not which.get("can_remember"):
+        return
+    try:
+        vaultkey.save(mk, config.home)
+    except vaultkey.VaultKeyError:
+        return
+    vault.audit("device_key_saved", {"method": which.get("method"),
+                                     "where": vaultkey.status(config.home)["where"]})
 
 
 def open_memory(config: Config, vault: Vault, embedder=None) -> MemoryStore:
@@ -288,6 +380,7 @@ def cmd_init(args, ui: UI) -> int:
     # their app. Nothing is weaker: the second factor is still required to open
     # the vault, it just exists from the beginning.
     enrolled = False
+    saved_key = False
     if not args.no_totp:
         try:
             from ..identity.ceremony import IdentityCeremony
@@ -307,6 +400,23 @@ def cmd_init(args, ui: UI) -> int:
             ui.once(f"   current code: {code}   (a new one every 30 seconds)")
             ui.once("   In Google Authenticator / Aegis / Authy: Add account -> "
                     "Enter a setup key -> paste the secret.")
+            # Remember this laptop in the SAME breath as choosing the passphrase,
+            # so the very first start after setup asks for nothing: the owner was
+            # asked once, in setup, and his complaint was being asked again after
+            # that. A key already in the store (a second `init` on the same laptop)
+            # is never overwritten.
+            if not getattr(args, "no_saved_key", False):
+                from ..security import vaultkey
+
+                which = vaultkey.backend(config.home)
+                if which.get("can_remember") and not vaultkey.load(config.home):
+                    try:
+                        vaultkey.save(mk, config.home)
+                        saved_key = True
+                        vault.audit("device_key_saved", {"method": which.get("method"),
+                                                         "by": "brain init"})
+                    except vaultkey.VaultKeyError:
+                        saved_key = False
             vault.lock()
         except Exception as exc:                   # never leave a half setup silent
             ui.warn(f"the authenticator could not be linked automatically ({exc}). "
@@ -315,7 +425,11 @@ def cmd_init(args, ui: UI) -> int:
         ui.say("\nOptional, and the strongest part: enrol your voice so only you can "
                "start Nila or approve anything - `brain voice enrol` (three times, "
                "about 3 seconds each).")
-    vault.audit("cli_init", {"user": args.user, "totp_enrolled": enrolled})
+    if saved_key:
+        ui.say("\nThis laptop now remembers the key: the passphrase is not asked again "
+               "here. It is still needed on another laptop, so keep the paper copy.")
+    vault.audit("cli_init", {"user": args.user, "totp_enrolled": enrolled,
+                             "device_key_saved": saved_key})
     vault.lock()
     ui.ok("ready. Next: `brain start` (it opens the app; no token to type).")
     return 0
@@ -3639,6 +3753,207 @@ def cmd_permission(args, ui: UI) -> int:
     return ui.err(f"unknown permission action: {action}")
 
 
+def cmd_hotkey(args, ui: UI) -> int:
+    """One key to bring Nila up, or the voice - and whether either will work.
+
+    `brain hotkey` reports; `brain hotkey --write` writes the shortcut; `--startup`
+    also starts Nila when you sign in. It refuses to write anything that would
+    stop at a password prompt, because a key that opens a prompt is not the thing
+    the owner asked for.
+    """
+    from ..util import hotkey
+
+    config = Config.load(args.home)
+    if args.check or not (args.write or args.startup or args.voice):
+        out = hotkey.check(config.home)
+        if args.json:
+            ui.emit(out)
+            return 0
+        print("One key, one voice - what is ready on this laptop")
+        print("─" * 62)
+        print(f"no password prompt : {'YES' if out['no_password_prompt'] else 'no'}"
+              f"  ({out['key_method']})")
+        if args.home:
+            print(f"shortcut           : {out['shortcut_path']}")
+        print(f"voice ready        : {'yes' if out['voice_ready'] else 'no'}")
+        for line in out["voice_missing"]:
+            print(f"  needs: {line}")
+        print("─" * 62)
+        print("next: " + out["next_step"])
+        print("write the shortcut: brain hotkey --write")
+        print("start at sign-in  : brain hotkey --startup")
+        return 0
+    if args.voice:
+        plan = hotkey.voice_plan()
+        ui.emit(plan) if args.json else (
+            print(f"microphone: {'yes' if plan['microphone'] else 'no'}   "
+                  f"transcriber: {plan['transcriber'] or 'none'}")
+            + [print(f"  install: {line}") for line in plan["to_install"]]
+            + [print(f"  then: {line}") for line in plan["then"]])
+        return 0
+    wrote: List[str] = []
+    if args.write:
+        try:
+            out = hotkey.write_hotkey_shortcut(config.home)
+        except hotkey.HotkeyError as exc:
+            return ui.err(str(exc))
+        wrote += out["written"]
+        if args.json:
+            ui.emit(out)
+        else:
+            ui.ok("shortcut written")
+            for path in out["written"]:
+                print(f"  {path}")
+            print()
+            print(out["how"])
+            print(f"\n  {out['honesty']}")
+            print(f"  {out['note']}")
+    if args.startup:
+        from ..util import launcher
+
+        if args.no_startup:
+            out = launcher.remove_startup()
+            ui.ok("Nila will not start at sign-in any more") if not args.json else None
+        else:
+            try:
+                # ALWAYS the dashboard, never the microphone: a sign-in shortcut
+                # that opened a mic is an always-on listener arriving by the back
+                # door, and `write_startup` refuses it outright.
+                out = launcher.write_startup(config.home, arguments="start")
+            except launcher.LauncherError as exc:
+                return ui.err(str(exc))
+            wrote.append(out["written"])
+            ui.ok("Nila will start when you sign in") if not args.json else None
+            ui.say("  that is the dashboard only - never the microphone") if not args.json else None
+            ui.say("  delete this file to stop it: " + out["remove"]) if not args.json else None
+    if args.json:
+        ui.emit({"ok": True, "written": wrote, "check": hotkey.check(config.home)})
+    return 0
+
+
+def cmd_lock_check(args, ui: UI) -> int:
+    """One screen that answers: will Nila ask me for a password next time?
+
+    The owner's problem was not that a password existed - it was that he could
+    not tell, looking at the machine, whether the next start would stop and ask.
+    So this prints the four things that decide it and nothing else:
+
+    * is there a vault, and where,
+    * can this laptop open it without typing,
+    * is a second factor enrolled (and does it still want a code),
+    * what the next start will actually do.
+    """
+    from ..security import vaultkey
+
+    config = Config.load(args.home)
+    vault = Vault(config)
+    saved = vaultkey.status(config.home)
+    has_vault = vault.initialized
+    has_totp = False
+    has_voice = False
+    if has_vault:
+        has_totp = vault.has_totp()
+        has_voice = vault.has_voice()
+    if not has_vault:
+        next_start = ("nothing yet - run nila-first-run.bat (it sets the vault up "
+                      "and remembers this laptop)")
+    elif saved["remembered"]:
+        next_start = ("start-nila.bat opens straight away: no passphrase on this "
+                      "laptop. (A NEW laptop still needs the passphrase.)")
+    else:
+        next_start = ("start-nila.bat will ask for the passphrase, then the code. "
+                      "Run `brain passphrase remember` once to stop that.")
+    out = {"ok": True, "vault": str(config.home), "has_vault": has_vault,
+           "remembered": saved["remembered"], "method": saved["method"],
+           "authenticator_enrolled": has_totp, "voice_enrolled": has_voice,
+           "session_minutes": int(config.session_timeout // 60),
+           "next_start": next_start,
+           "where_the_passphrase_matters": ("on another laptop, or after "
+                                            "`brain passphrase forget`"),
+           "undo": "brain passphrase forget",
+           "forgot_it": ("if you do not know it and this laptop still opens Nila, "
+                         "run `brain passphrase set` to choose a new one - your "
+                         "memories are not affected")}
+    if args.json:
+        ui.emit(out)
+        return 0
+    print("Nila - how it opens on this laptop")
+    print("─" * 62)
+    print(f"vault          : {out['vault'] if has_vault else 'none yet'}")
+    print(f"no-password    : {'YES - this laptop remembers the key' if saved['remembered'] else 'no'}"
+          + (f"  ({saved['method']})" if saved["remembered"] else ""))
+    print(f"authenticator  : {'enrolled' if has_totp else 'not enrolled'}")
+    print(f"voice          : {'enrolled' if has_voice else 'not enrolled'}")
+    print(f"locks itself   : after {out['session_minutes']} min idle")
+    print("─" * 62)
+    print("next start     : " + next_start)
+    print()
+    print("the passphrase is needed on ANOTHER laptop, or after you forget the key.")
+    print("forgot it?      brain passphrase set   (choose a new one; memories stay)")
+    return 0
+
+
+def cmd_passphrase(args, ui: UI) -> int:
+    """Remember the key on this laptop, forget it, or say which it is.
+
+    This is the answer to "it asks me for the password again and again". The
+    command does not touch the memories - it decides whether this Windows account
+    may open them without typing. `status` is the question the owner actually has:
+    *will it ask me next time?*
+    """
+    from ..security import vaultkey
+
+    config = Config.load(args.home)
+    action = (args.action or "status").lower()
+    if action in ("status", "show"):
+        out = {**vaultkey.status(config.home), "home": str(config.home)}
+        if args.json:
+            ui.emit(out)
+            return 0
+        print(f"remembered on this laptop: {'YES' if out['remembered'] else 'no'}")
+        print(f"  method : {out['method']} ({out['detail']})")
+        if out["where"]:
+            print(f"  where  : {out['where']}")
+        print(f"  {out['note']}")
+        return 0
+    if action in ("remember", "save", "on"):
+        config_, vault = open_vault(args)
+        mk = bytes(vault.session.mk)
+        out = vaultkey.save(mk, config.home)
+        vault.audit("device_key_saved", {"method": out.get("method"),
+                                         "by": "brain passphrase remember"})
+        if args.json:
+            ui.emit(out)
+            return 0
+        ui.ok(f"remembered on this laptop ({out.get('method')})")
+        ui.say("  from now on Nila opens without asking, on THIS Windows account "
+               "only. The passphrase is still needed on any other machine.")
+        ui.say("  undo any time: brain passphrase forget")
+        return 0
+    if action in ("forget", "off", "remove"):
+        out = vaultkey.forget(config.home)
+        ui.emit(out) if args.json else (
+            ui.ok("forgotten: Nila will ask for the passphrase again")
+            + ui.say(f"  {out['note']}"))
+        return 0
+    if action in ("set", "change", "new"):
+        # Setting a passphrase does not need the OLD one: an open vault is proof
+        # enough (that is what the saved device key just gave us). This is the way
+        # out when the passphrase is lost but the laptop still opens Nila.
+        config_, vault = open_vault(args)
+        new = read_passphrase(args, "new passphrase (write it down somewhere safe): ",
+                              confirm=True) if not getattr(args, "new", "") else args.new
+        try:
+            vault.set_passphrase(new, mode="cli")
+        except (ValueError, RuntimeError) as exc:
+            return ui.err(str(exc))
+        vault.audit("passphrase_changed_by_owner", {})
+        ui.ok("new passphrase set. Write it down - it is the only thing that opens "
+              "the vault on a NEW machine.")
+        return 0
+    return ui.err(f"unknown action '{action}' - use status, remember, forget or set")
+
+
 def cmd_dashboard(args, ui: UI) -> int:
     """The one command an owner runs: unlock once, then the app is in front of him.
 
@@ -3723,6 +4038,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="authenticator code (otherwise you are prompted)")
     p.add_argument("--recovery", default=None, metavar="CODE",
                    help="one-time recovery code, used instead of the authenticator")
+    p.add_argument("--no-saved-key", action="store_true",
+                   help="do not use (or save) the device key this laptop remembered; "
+                        "type the passphrase instead")
     sub = p.add_subparsers(dest="command", required=True)
 
     # Every sub-command gets `--json` in its own position. Wrapping add_parser
@@ -3736,6 +4054,8 @@ def build_parser() -> argparse.ArgumentParser:
         if "--json" not in existing:
             made.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
                               help="machine-readable output")
+        made.add_argument("--no-saved-key", action="store_true", default=argparse.SUPPRESS,
+                          help=argparse.SUPPRESS)
         return made
 
     sub.add_parser = _add_parser            # type: ignore[method-assign]
@@ -4140,6 +4460,26 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--how", action="store_true", help="what to press, and what this can do")
     sp.add_argument("--note", action="store_true", help="also print what it cannot do")
     sp.set_defaults(func=cmd_screen)
+
+    sp = sub.add_parser("hotkey", help="one key (or your voice) to bring Nila up")
+    sp.add_argument("--check", action="store_true", help="report only (the default)")
+    sp.add_argument("--write", action="store_true", help="write the shortcut")
+    sp.add_argument("--startup", action="store_true", help="also start at sign-in")
+    sp.add_argument("--no-startup", action="store_true", help="remove the sign-in start")
+    sp.add_argument("--voice", action="store_true", help="what the voice half needs")
+    sp.set_defaults(func=cmd_hotkey)
+
+    sp = sub.add_parser("lock-check", help="will Nila ask me for a password next time?")
+    sp.set_defaults(func=cmd_lock_check)
+
+    sp = sub.add_parser("passphrase", help="does this laptop remember the key? "
+                                          "remember, forget, or set a new passphrase")
+    sp.add_argument("action", nargs="?", default="status",
+                    choices=["status", "show", "remember", "save", "on",
+                             "forget", "off", "remove", "set", "change", "new"])
+    sp.add_argument("--new", default="", help="with `set`: the new passphrase")
+    add_auth(sp)
+    sp.set_defaults(func=cmd_passphrase)
 
     sp = sub.add_parser("wake", help='say "Nila" inside a window you open (not always-on)')
     sp.add_argument("--window", type=int, default=0, metavar="SECONDS",

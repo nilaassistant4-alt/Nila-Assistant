@@ -519,25 +519,54 @@ def m3_voice_is_exclusively_required():
 
 
 def m3_cli_passphrase_only_yields_full_access():
-    """The CLI path a real user takes, with NO voice enrolled at all."""
-    src = (ROOT / "brain/cli/main.py").read_text()
-    if "no second factor is enrolled, so the passphrase alone is " in src \
-            and "vault.session.degraded = False" not in src:
+    """The CLI path a real user takes, with NO voice and NO authenticator.
+
+    This used to grep `open_vault`'s source for two strings. That is how a probe
+    reports the wrong answer: stage 14 moved the logic into `_finish_open` and the
+    grep went blind, then reported an ERROR on code that was still correct. It now
+    *runs* the refusal on a throwaway vault, which survives any refactor.
+    """
+    import os
+    import tempfile as _tf
+
+    from brain.cli import main as cli
+    from brain.config import Config
+    from brain.memory.vault import Vault
+
+    home = pathlib.Path(_tf.mkdtemp(prefix="nila-probe-cli-"))
+    cfg = Config.load(home)
+    cfg.fast_kdf = True
+    v = Vault(cfg)
+    v.initialize("probe-passphrase-cli", "Santhosh S", "probe-cli")
+    v.lock()
+
+    home_str = str(home)
+
+    class Args:
+        home = home_str
+        passphrase = "probe-passphrase-cli"
+        passphrase_env = None
+        passphrase_stdin = False
+        totp = None
+        recovery = None
+        no_saved_key = True        # never touch the real OS store from a probe
+
+    refused = None
+    try:
+        cli.open_vault(Args())
+    except SystemExit as exc:
+        refused = str(exc)
+    if refused and "passphrase alone is refused" in refused:
         record(PASS, "CLI passphrase-only access is bounded",
-               "v0.1: `open_vault` refuses the passphrase alone (authenticator code required; "
-               "only the setup commands `brain totp` / `brain enroll-voice` may open a vault "
-               "that has no second factor yet).")
-    elif "vault.session.degraded = False" in src and "warn_if_single_factor" in src:
-        record(GAP, "CLI passphrase-only access is bounded",
-               "with no second factor enrolled, `open_vault` clears the degraded "
-               "flag, so the passphrase alone yields a FULL-tier session able to "
-               "recall sensitive and restricted memories. Nila warns on every such "
-               "session but nothing blocks it. Against mandate 3 ('respond "
-               "exclusively to Santhosh's verified voice') this is the single "
-               "largest gap in the build.")
+               "a real `open_vault()` run with no voice and no authenticator refused "
+               "the passphrase alone: " + refused.split(".")[0])
+    elif refused:
+        record(PASS, "CLI passphrase-only access is bounded",
+               "the passphrase alone was refused: " + refused)
     else:
-        record(ERROR, "CLI passphrase-only access is bounded",
-               "expected code shape not found; re-inspect open_vault()")
+        record(GAP, "CLI passphrase-only access is bounded",
+               "`open_vault()` opened a full session from the passphrase alone with no "
+               "second factor enrolled - that is one factor pretending to be two.")
 
 
 def m3_single_account_binding():

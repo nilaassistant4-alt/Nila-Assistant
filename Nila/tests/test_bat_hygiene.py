@@ -31,7 +31,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 BATS = sorted(ROOT.glob("*.bat"))
 #: Scripts a first-run owner is told about, so each must exist and be mentioned.
 DOCUMENTED = {"start-nila.bat", "setup.bat", "report.bat", "nila-phone.bat",
-              "sync-host.bat", "sync-join.bat", "sync-now.bat"}
+              "sync-host.bat", "sync-join.bat", "sync-now.bat",
+              # stage 14: the two files that answer "it keeps asking for the password"
+              "nila-first-run.bat", "nila-easy-start.bat"}
 
 
 def test_there_are_bat_files_and_the_expected_ones_are_present():

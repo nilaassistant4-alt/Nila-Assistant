@@ -27,6 +27,12 @@ FEATURES: List[Dict[str, Any]] = [
     # ---- the base ---------------------------------------------------- #
     {"group": "base", "label": "Encrypted vault, passphrase + TOTP",
      "state": "done", "check": "brain.memory.vault:Vault"},
+    {"group": "base", "label": "Passphrase typed once: the key is remembered per OS account",
+     "state": "done", "check": "brain.security.vaultkey:backend"},
+    {"group": "base", "label": "Forgotten passphrase: set a new one without losing the vault",
+     "state": "done", "check": "brain.memory.vault:Vault.set_passphrase"},
+    {"group": "base", "label": "One key or your voice: hotkey shortcut, wake word, sign-in start",
+     "state": "done", "check": "brain.util.hotkey:check"},
     {"group": "base", "label": "Voice as a second factor (enrol, challenge, replay-proof)",
      "state": "done", "check": "brain.security.speaker:SpeakerLock"},
     {"group": "base", "label": "Speaker lock: only the owner's voice is acted on",
