@@ -23,12 +23,21 @@ mandate probe (`scripts/nila_mandate_probe.py`) and the full suite pass.
 | Unlock again after a lock, in the browser | **built this pass** | `lockedOut()` → `POST /v1/auth/verify` |
 | Lessons / "that was wrong" loop (v0.3) | not built | next phase |
 | T0–T4 access tiers (v0.3) | not built — `session_tier()` exists, the 5 levels do not | next phase |
-| Voice / push-to-talk (v0.4) | not built (voice *enrolment* exists for unlock, not speech in/out) | phase 2 |
-| Passkeys, phone PWA, wake word | not built | phases 4+ |
-| Connector wave (Calendar/Drive/Notion/GitHub/Gmail) | not built — the catalogue ships **one working route shape** and CI-tested placeholders | phase 5 |
+| Voice in and out, Tamil (v0.2 stage 11) | **built** — `brain talk` (press once), `brain ears`, `brain speak`; the engines need one install (`brain fix voice` / `brain fix hearing`) | `brain agent ears/speech` |
+| Image ingest with metadata stripping | **built** | `brain file <image>` |
+| Daily report | **built** | `report.bat`, `brain report` |
+| Wake word ("Nila"), inside a window you open | **done** (stage 13) - `brain wake --window N`, 15-minute ceiling, audited | done |
+| Passkeys, phone PWA | not built | phases 4+ |
+| Connector wave (Calendar/Drive/Notion/GitHub/Gmail) | calendar is **written**; gmail, drive, notion and github ship as declared, disabled integrations with single-account binding. What is missing is the token exchange (Google OAuth / a PAT), not the plumbing | `brain connectors integrations` |
 | Version 0.2.0 and `Nila-v0.2.0.zip` | **not done on purpose** — the owner names the archive | — |
 
 ## Known gaps carried forward (from the mandate probe)
 
-Do-not-store (ephemeral) path, launch-only app control, device/account binding to one owner,
-Gmail binding, Tamil liveness challenge, strictly per-command activation of plugins.
+**None remain.** As of stage 13 the probe is 29 pass, 0 fail, 0 gap: the do-not-store
+(ephemeral) path, device/account binding to one owner, Gmail/Drive account binding, the
+Tamil liveness challenge and strictly per-command activation were all closed, each with a
+check that drives the code rather than reading it. Launch-only app control was already
+built (`open_app`); what was missing was a probe that looked for it by the names the registry
+actually uses, which is why it used to be counted as a gap in a build that had it.
+
+Run `python scripts/nila_mandate_probe.py` to see the 29 checks and their evidence.

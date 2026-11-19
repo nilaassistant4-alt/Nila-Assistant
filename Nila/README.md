@@ -559,7 +559,9 @@ plainly what this is not: a trained speaker model.
     brain launcher --plan               # what can start Nila on this machine
     brain launcher --write              # an icon (and a hotkey recipe) on the Desktop
 
-A wake word that listens all day is deliberately **not** offered.
+A wake word is offered, but only inside a window you open: `brain wake --window 120`
+listens for two minutes, hears "Nila", and stops. It lists all day only if you ask
+for a window that long, and a window over 15 minutes is refused.
 
 ## Any file (v0.2, stage 6)
 
@@ -616,7 +618,8 @@ text came out). It never reports `working` without the second half.
 
 One press listens once, for a bounded number of seconds, then closes. On Windows
 the same file also goes into the Startup folder, so the Win key then typing "Nila"
-reaches it. An always-on wake word is still refused by design.
+reaches it. Press-to-talk needs no window at all; for saying the name instead, see
+`brain wake` above. The microphone is never opened for the life of the machine.
 
 ## Speaking Tamil (v0.2, stage 11)
 

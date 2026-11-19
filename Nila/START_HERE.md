@@ -180,8 +180,11 @@ answers on this PC and says so.
 
 ## 10. Not built yet (do not expect these)
 
-Always-on wake word (refused on purpose: an all-day microphone), screen viewing,
-ZIP-project editing, music player, a phone app, Claude/OpenAI providers.
+An always-on wake word (refused on purpose: an all-day microphone - `brain wake`
+is a window instead), ZIP-project editing, a native Android app, the Google OAuth
+handshake for Gmail/Drive, a neural speaker model, a fine-tuned Tamil model,
+Claude/OpenAI providers. Screen reading, the music player and the two-PC sync are
+built (stage 12-13), so they are no longer on this list.
 `python brain.py progress` lists every feature with its real state — `done`, `partial` or
 `missing` — computed from the code, and it will not round up to 100%.
 

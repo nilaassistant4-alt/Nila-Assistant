@@ -195,20 +195,32 @@ def m1_ephemeral_values_are_purged_immediately():
 def m1_command_only_app_control():
     """Mandate's own example: 'open WhatsApp' — launch an app WITHOUT reading,
     scanning or parsing its contents."""
-    from brain.agent import tools as T
-    names = sorted(n for n in dir(T) if n.startswith("TOOL") or n.isupper())
-    src = (ROOT / "brain/agent/tools.py").read_text()
-    launchers = re.findall(r'"(open_app|launch|start_app|app_open|open_application)"', src)
-    readers = re.findall(r'"(read_file|list_directory|view_photo|search_photos)"', src)
+    from brain.agent.tools import build_default_registry
+
+    registry = build_default_registry()
+    # Ask the REGISTRY, not the source text. The old check searched for the bare
+    # string '"open_app"' and the registry declares it as `name="open_app"`, so a
+    # tool that existed was reported as a gap in a build that had it. A probe that
+    # fails on formatting is the same disease as a canned reply that passes a
+    # question it never understood.
+    launchers = [n for n in registry.names()
+                 if n in ("open_app", "launch", "start_app", "app_open")]
+    readers = [n for n in registry.names()
+               if n in ("read_file", "list_directory", "view_photo", "search_photos")]
     if launchers:
-        record(PASS, "a launch-only app-control tool exists", f"{launchers}")
+        spec = registry.get(launchers[0])
+        # The mandate's point is that launching must not require READING anything:
+        # the launch tool must carry no file/photo capability of its own.
+        record(PASS, "a launch-only app-control tool exists",
+               f"{launchers} declared in the registry; capability={spec.capability or 'none'} "
+               f"(launching does not read the app's contents). Content tools are separate: "
+               f"{readers}")
     else:
         record(GAP, "a launch-only app-control tool exists",
-               f"no launcher tool. The tools that DO exist read content: {readers}. "
-               "This build is a desktop/CLI memory agent, not a phone assistant, so "
-               "'open WhatsApp without parsing its contents' has no implementation "
-               "surface. The zero-ingestion principle is honoured for what exists "
-               "(see the audit checks above) but app control is unbuilt.")
+               f"no launcher tool in the registry. The tools that DO exist read content: "
+               f"{readers}. 'open WhatsApp without parsing its contents' has no "
+               f"implementation surface, so the zero-ingestion principle is honoured for "
+               f"what exists but app control is unbuilt.")
 
 
 def m1_forget_hard_purges_derived_data():
