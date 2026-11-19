@@ -66,6 +66,8 @@ class ToolContext:
     now: Callable[[], int] = now_ms
     #: permission broker. Injected by the agent; the model can never set it.
     permissions: Any = None
+    #: the use-once, never-written-down store (brain/agent/ephemeral.py)
+    ephemeral: Any = None
 
 
 class ToolError(RuntimeError):
@@ -303,6 +305,81 @@ def build_default_registry() -> ToolRegistry:
     def forget(ctx: ToolContext, id: str, hard: bool = False) -> Dict[str, Any]:
         ok = ctx.memory.delete(id, hard=bool(hard))
         return {"ok": ok, "id": id, "hard": bool(hard)}
+
+    @reg.tool(
+        name="hold_ephemeral",
+        description=("Hold a value for ONE use without writing it down: a number to "
+                     "dial, an address to read out, a code to type. Nothing verbatim is "
+                     "stored - only a salted digest and the purpose - and it disappears "
+                     "after one use, on expiry, or when the session locks. Use this "
+                     "instead of `remember` whenever the owner did not ask you to keep it."),
+        parameters={"type": "object",
+                    "properties": {"value": {"type": "string"},
+                                   "purpose": {"type": "string",
+                                               "description": "what it is for, in the owner's words"},
+                                   "ttl_seconds": {"type": "integer", "minimum": 30,
+                                                   "maximum": 3600}},
+                    "required": ["value"]},
+        risk="low", tags=["memory", "privacy", "offline"],
+    )
+    def hold_ephemeral(ctx: ToolContext, value: str, purpose: str = "",
+                       ttl_seconds: Optional[int] = None) -> Dict[str, Any]:
+        from .ephemeral import EphemeralError, shared
+
+        store = ctx.ephemeral or shared()
+        try:
+            slot = store.keep(value, purpose=purpose,
+                              ttl=float(ttl_seconds) if ttl_seconds else None)
+        except EphemeralError as exc:
+            return {"ok": False, "error": str(exc)}
+        out = slot.describe()
+        out.update({"ok": True,
+                    "held_because": "this is RAM only - it is not in memory.db, not in a "
+                                    "backup and not in sync",
+                    "how_to_use": f"call use_ephemeral with id={slot.id}"})
+        return out
+
+    @reg.tool(
+        name="use_ephemeral",
+        description=("Take a held value out of the use-once store. It is handed over ONCE "
+                     "and then gone; a second call says it was already used."),
+        parameters={"type": "object",
+                    "properties": {"id": {"type": "string"},
+                                   "purpose": {"type": "string",
+                                               "description": "words from the purpose, if the id is not known"}},
+                    "required": []},
+        risk="low", tags=["memory", "privacy", "offline"],
+    )
+    def use_ephemeral(ctx: ToolContext, id: str = "", purpose: str = "") -> Dict[str, Any]:
+        from .ephemeral import EphemeralError, shared
+
+        store = ctx.ephemeral or shared()
+        sid = (id or "").strip()
+        if not sid:
+            # an id is not something a person remembers; the purpose is
+            matches = store.find(purpose)
+            if not matches:
+                return {"ok": False, "error": f"nothing held for '{purpose}'"}
+            if len(matches) > 1:
+                return {"ok": False, "ambiguous": True,
+                        "error": f"{len(matches)} values match - say which one",
+                        "candidates": [s.describe() for s in matches]}
+            sid = matches[0].id
+        try:
+            return store.take(sid)
+        except EphemeralError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    @reg.tool(
+        name="list_ephemeral",
+        description="What is being held for one use right now. Shows purposes and ids, never values.",
+        parameters={"type": "object", "properties": {}},
+        risk="low", tags=["memory", "privacy", "offline"],
+    )
+    def list_ephemeral(ctx: ToolContext) -> Dict[str, Any]:
+        from .ephemeral import shared
+
+        return (ctx.ephemeral or shared()).report()
 
     @reg.tool(
         name="list_memories",

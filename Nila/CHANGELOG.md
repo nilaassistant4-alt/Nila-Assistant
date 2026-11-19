@@ -1,5 +1,89 @@
 # Changelog
 
+## Unreleased — stage 13: the three "not built" rows and the partials, finished (2026-11-04)
+
+Every row below was reported as built while a part of it was not. The pattern is
+the one the owner kept pointing at, so this stage is written the other way round:
+each item says what was missing, then what now exists, then what still does not.
+
+### Added
+- **The wake word, without the always-on microphone — `brain wake`.**
+  The old row said *not built* and gave the reason (an all-day microphone is a
+  battery and a privacy cost). The reason stood; the missing half did not. A
+  window is now explicit: `brain wake --window 120` opens the microphone for two
+  minutes, hears "Nila" / "hey Nila" / "நிலா", and stops. The window is the
+  `mic.listen` capability, asked once per opening and audited on open and close;
+  the ceiling is 15 minutes and a longer one is refused in words. What matched
+  comes back with its audio, because a wake word is a doorbell and the speaker
+  lock is the key. `brain wake --check file.wav` scores a recording, so the
+  feature is usable and provable on a machine with no microphone (the sandbox has
+  none) — `brain/agent/wake.py`.
+- **A use-once store that writes nothing down — `brain temp` and three tools.**
+  Mandate 1 asks for a tier where a number used for a temporary task is never
+  saved. There wasn't one: the only option was `remember`, and forgetting was a
+  habit the model was asked to keep. `brain/agent/ephemeral.py` holds a value in
+  RAM against a purpose; the record that may be written is a per-process salted
+  digest and nothing else; `take()` hands it over once and then it is gone;
+  expiry purges it, `brain lock` purges it, `brain temp --purge` purges it; it is
+  never in `memory.db`, so it is never in a backup or a sync payload. The agent
+  gets `hold_ephemeral` / `use_ephemeral` / `list_ephemeral`.
+- **"Strictly per command" as a mode — `brain permission mode command`.**
+  Mandate 5 wants activation strictly on demand; the build had standing grants
+  that would not have satisfied a strict reading. The mode now exists: in
+  `command` mode no durable grant is honoured (check AND peek, so a caller cannot
+  skip the affirmation), a new standing grant is refused, and switching back
+  restores what was there. `DURABLE_TTL_MS` also stopped claiming 7 days in its
+  comment — it has been 24 h since stage 8.
+- **Tamil liveness challenges — `brain challenge --style auto|tamil_digits|tamil_words`.**
+  A Tamil-first owner was asked to read "alpha bravo cedar" aloud to prove she was
+  herself. The voice maths never needed English (MFCC is text-independent); a word
+  list was missing. Tamil words and Tamil numerals now ship, `auto` follows the
+  owner's language, and an unknown style is refused instead of silently falling
+  back to English.
+- **Single-account binding for Gmail, Drive and Calendar — `brain connectors integrations`.**
+  The integrations registry could describe a Gmail endpoint but nothing asserted
+  *which* account, and nothing stopped a second one. Each integration may now name
+  its one account; a call naming any other account, or a call on an unbound
+  account integration, is refused before the network with the exact command that
+  binds it. `gmail` and `drive` now ship as declared, disabled integrations with
+  a `whoami` operation, so the binding can be checked against the token.
+- **A device ceiling — `brain device limit N`.** Any number of devices could be
+  enrolled from a bundle and none had to be the owner's. The ceiling is 3 by
+  default, enforced on the side that knows the full list (the exporting vault),
+  counted from the shared identity blob so it holds across hops PC1 → PC2 → PC3,
+  and it can be raised on purpose. `revoke` now removes the device from both
+  lists, so the slot is actually freed.
+
+### Changed
+- **The 44-row list is now 45 rows and 36 are done** (was 33): 6 partial, 3 not
+  built, 80% — and the three that remain say why instead of being rounded away.
+  "2 PCs, one memory" was split out of the row it shared with the Tamil model,
+  because a finished feature sitting next to an unfinished one reads as half-done.
+- **OCR for scanned pages and scene detection are `done`, not `partial`.**
+  `--run` works the moment ffmpeg is there (`getffmpeg.bat`), and the built-in
+  reader needs nothing; leaving it `partial` was the pessimistic side of the same
+  mistake.
+- `brain progress` no longer calls the wake word "refused by design"; it says what
+  the window does and what its limits are.
+
+### Fixed (small, and each one found by a check rather than by reading)
+- The wake matcher counted three syllables in a four-syllable phrase, because a
+  30 ms gap between words vanished inside a 20 ms analysis frame — a sentence
+  scored as the name. Frames are 10 ms and a phrase of four syllables is refused.
+- `EphemeralStore` had a slot ceiling but the CLI printed "nothing is being held"
+  when a *different process* held the value. The CLI now says that plainly and
+  offers `--use`, which holds and hands over in one command.
+- `vault.revoke_device` removed the device from the local map only, so the shared
+  count never went down and a revoked slot could never be reused.
+
+### Still not built, and said so
+- A native Android app and multi-user accounts (Telegram answers from the phone;
+  a native app is a different project).
+- A neural speaker model (ECAPA / x-vector) and a fine-tuned Tamil model: both
+  need a model download or a labelled training set and a GPU run.
+- The Google OAuth handshake itself for Gmail/Drive — the binding and the
+  refusal are built, the token exchange is not.
+
 ## Unreleased — stage 12: the eight rows that said "not built", and five partials (2026-11-04)
 
 ### Added

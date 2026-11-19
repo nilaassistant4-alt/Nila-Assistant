@@ -465,7 +465,14 @@ def _cleanup(path: Path) -> None:
 def cmd_lock(args, ui: UI) -> int:
     config, vault = open_vault(args, require_unlocked=False)
     vault.lock()
-    ui.ok("locked; in-memory key zeroised.")
+    # Locking must also empty the use-once store. It lives in this process's RAM
+    # and nothing wrote it down, but "lock" is the owner's word for "nothing of
+    # mine is open any more", and a held phone number is part of that.
+    from ..agent import ephemeral
+
+    purged = ephemeral.shared().purge(reason="lock")["purged"]
+    ui.ok("locked; in-memory key zeroised." + (f" {purged} held value(s) purged."
+                                               if purged else ""))
     return 0
 
 
@@ -820,6 +827,35 @@ def cmd_connectors(args, ui: UI) -> int:
             except StepUpRequired:
                 reg.authorise(target, read_passphrase(args), read_totp(args), uses=uses)
 
+        # `integrations` - the account-bound side (mandate 3), which is a
+        # different question from "is a key present": it asks WHICH account.
+        if action == "integrations":
+            from ..agent.integrations import IntegrationGateway
+
+            gw = IntegrationGateway(config, memory=memory, vault=vault)
+            if args.name and len(args.name) >= 2 and args.name[0] == "bind":
+                try:
+                    out = gw.bind_account(args.name[1], args.name[2] if len(args.name) > 2 else "")
+                except Exception as exc:
+                    return ui.err(str(exc))
+                ui.emit(out) if args.json else (
+                    ui.ok(f"{out['name']} is bound to {out['account']}")
+                    + (ui.say("  it was bound to another account before; the change is audited")
+                       if out["rebound"] else ""))
+                return 0
+            out = gw.bindings()
+            if args.json:
+                ui.emit(out)
+                return 0
+            ui.say(f"{out['count']} integration(s) speak for an account:")
+            for name, row in out["integrations"].items():
+                mark = f"bound: {row['account']}" if row["bound"] else "NOT BOUND"
+                ui.say(f"  {'ON ' if row['enabled'] else 'off'}  {name:<12} {mark}")
+            if out["unbound"]:
+                ui.say("\nAn unbound account integration is refused, not guessed:")
+                ui.say(f"  brain connectors integrations bind {out['unbound'][0]} you@gmail.com")
+            return 0
+
         if action == "list":
             st = reg.status()
             if args.json:
@@ -1095,6 +1131,176 @@ def cmd_screen(args, ui: UI) -> int:
     return 0 if out["ok"] else 1
 
 
+def cmd_wake(args, ui: UI) -> int:
+    """The wake word: say "Nila" inside a window you opened, or score a file.
+
+    Deliberately not an always-on listener. `brain wake --window 120` opens the
+    microphone for two minutes, hears the name, then stops - and the audio that
+    matched comes back so the speaker lock can judge it before anything is acted
+    on. `brain wake --check file.wav` scores a recording, which is how this works
+    on a machine with no microphone.
+    """
+    from ..agent import wake
+    from ..security.permission import Broker
+
+    if args.check:
+        try:
+            out = wake.probe(args.check)
+        except Exception as exc:
+            return ui.err(f"could not read {args.check}: {exc}")
+        if args.json:
+            ui.emit(out)
+            return 0
+        print(f"{'HEARD' if out['heard'] else 'no match'}: confidence "
+              f"{out['confidence']:.2f}, {out['seconds']:.2f}s, "
+              f"{out['syllables']:.0f} syllable(s)")
+        for problem in out.get("problems") or []:
+            print(f"  - {problem}")
+        print(f"phrases: {', '.join(out['phrases'])}")
+        return 0
+
+    config = Config.load(args.home)
+    broker = Broker(path=config.home / "permissions.json")
+
+    def audit(event: str, detail: dict) -> None:
+        try:
+            Vault(config).audit(event, detail)
+        except Exception:
+            pass
+
+    try:
+        window = wake.WakeWindow(seconds=float(args.window or wake.DEFAULT_WINDOW_SECONDS),
+                                 broker=None if args.no_permission_prompt else broker,
+                                 audit=audit)
+    except wake.WakeError as exc:
+        return ui.err(str(exc))
+    if args.json is False and not args.check:
+        print(f"listening for {int(window.seconds)} s - say \"Nila\" "
+              f"(the microphone stops at the end of the window)")
+    out = wake.listen(window)
+    if args.json:
+        out.pop("samples", None)
+        ui.emit(out)
+        return 0 if out.get("ok") else 1
+    if not out.get("ok"):
+        ui.err(out.get("error", "could not listen"))
+        for key in ("how", "reason"):
+            if out.get(key):
+                ui.say(f"  {out[key]}")
+        return 1
+    if out.get("heard"):
+        ui.ok(f"heard \"Nila\" (confidence {out['confidence']:.2f}) after "
+              f"{out['chunks']} chunk(s)")
+        ui.say("  the audio is kept for this turn only - run the speaker lock on it "
+               "before acting on anything said next.")
+    else:
+        ui.say(out.get("reason") or "no wake word in that window")
+    return 0
+
+
+def cmd_temp(args, ui: UI) -> int:
+    """Hold a value for one use - in RAM, never written down, never synced.
+
+    The owner's mandate has an explicit tier for this ("a number used for a
+    temporary task must not be saved"), and until now the only storage was the
+    durable one. `brain temp hold 9845123789 --for "call amma"` keeps the value
+    until it is used once, it expires, or the session locks; `brain temp` shows
+    what is held (purposes and ids, never the values); `brain temp show <id>`
+    hands it over once and forgets it; `brain temp purge` drops everything now.
+    """
+    from ..agent import ephemeral
+
+    store = ephemeral.shared()
+    config = Config.load(args.home)
+    store.journal = vault_audit(config)
+    action = (args.action or "list").lower()
+    try:
+        if action in ("hold", "keep", "add"):
+            value = args.value or ""
+            if not value and args.stdin:
+                import sys
+
+                value = sys.stdin.readline().rstrip("\n")
+            if not value:
+                ui.err("give the value: `brain temp hold 9845123789 --for 'call amma'` "
+                       "(or pipe it in with --stdin)")
+                return 2
+            slot = store.keep(value, purpose=args.for_ or "", kind=args.kind,
+                              ttl=float(args.ttl) if args.ttl else None)
+            if args.use:
+                # One command, one lifecycle: hold, hand over once, forget. This
+                # is the only way the CLI can honestly show a use-once value,
+                # because every command is a new process.
+                taken = store.take(slot.id)
+                if args.json:
+                    ui.emit({**slot.describe(), "used": True, "value": taken["value"]})
+                else:
+                    print(taken["value"])
+                return 0
+            if args.json:
+                ui.emit(slot.describe())
+                return 0
+            print(f"held {slot.id}  for: {slot.purpose}  "
+                  f"({max(0, int(slot.expires_at - __import__('time').time())) // 60} min)")
+            print("not written down: RAM only, and gone after one use.")
+            print("NOTE: this hold lives in THIS command's memory. A later `brain` "
+                  "command is a new process and cannot see it - that is the whole "
+                  "point. To use it in the same breath, add --use.")
+            return 0
+        if action == "show":
+            sid = args.id or (args.value or "")
+            if not sid:
+                ui.err("which value? `brain temp` lists the ids")
+                return 2
+            out = store.take(sid)
+            if args.json:
+                ui.emit(out)
+                return 0
+            print(out["value"])
+            print("(that was the only copy - a second `show` will refuse)", file=__import__("sys").stderr)
+            return 0
+        if action in ("purge", "clear", "forget"):
+            out = store.purge(reason="owner asked")
+            ui.emit(out) if args.json else print(
+                f"purged {out['purged']} held value(s). {out['note']}")
+            return 0
+        if action in ("list", "status"):
+            report = store.report()
+            if args.json:
+                ui.emit(report)
+                return 0
+            if not report["slots"]:
+                print("nothing is being held for one use.")
+                print(report["note"])
+                return 0
+            print(f"{report['held']} held (never written down):")
+            for slot in report["slots"]:
+                print(f"  {slot['id']}  {slot['purpose']}  "
+                      f"{'used' if slot['used'] else str(slot['expires_in'] // 60) + ' min left'}")
+            return 0
+        ui.err(f"unknown action '{action}'")
+        return 2
+    except ephemeral.EphemeralError as exc:
+        ui.err(str(exc))
+        if action in ("show", "list", "status"):
+            ui.say("values are held in RAM by the process that held them. A held "
+                   "value is therefore invisible to a later command - by design. "
+                   "Use `brain temp hold VALUE --for ... --use` to hold and use it "
+                   "in one step, `brain remember` for something you want kept, or "
+                   "let the assistant hold it while it works (the agent tools do).")
+        return 2
+
+
+def vault_audit(config):
+    """A best-effort audit sink for the ephemeral store, without unlocking."""
+    def sink(event: str, detail: dict) -> None:
+        try:
+            Vault(config).audit(event, detail)
+        except Exception:
+            pass
+    return sink
+
+
 def cmd_music(args, ui: UI) -> int:
     """Play a song from the owner's own folders - no account, no download."""
     from ..agent import music
@@ -1358,7 +1564,22 @@ def cmd_device(args, ui: UI) -> int:
     config, vault = open_vault(args)
 
     if args.action == "list":
-        ui.emit({"this_device": vault.device_id, "devices": vault.devices()})
+        room = vault.enrolment_room()
+        ui.emit({"this_device": vault.device_id, "devices": vault.devices(),
+                 "room": room})
+        if room["full"] and not args.json:
+            ui.say(f"{room['used']} of {room['limit']} devices used - a new device "
+                   f"must replace one of these: {', '.join(room['devices'])}")
+    elif args.action == "limit":
+        if not args.count:
+            ui.emit(vault.enrolment_room())
+            vault.lock()
+            return 0
+        info = vault.set_device_limit(args.count)
+        ui.emit(info)
+        if not args.json:
+            ui.say(f"at most {info['limit']} device(s) may hold this brain's key. "
+                   f"{info['used']} in use now.")
     elif args.action == "export":
         bundle = vault.export_bundle(label=args.label)
         out = Path(args.out).expanduser()
@@ -3314,6 +3535,31 @@ def cmd_permission(args, ui: UI) -> int:
             print(json.dumps({"ok": True, "latched": True, **result}))
         return 0
 
+    if action == "mode":
+        try:
+            if args.capability and args.capability not in ("", "show"):
+                out = broker.set_mode(args.capability, by="cli")
+                ui.ok(f"activation mode: {out['mode']}")
+                ui.say(f"  {out['effect']}")
+                ui.say(f"  {out['standing_grants_kept']} standing grant(s) exist and are "
+                       f"{'kept but NOT honoured' if out['mode'] == 'command' else 'honoured'}.")
+            else:
+                out = {"ok": True, "mode": broker.mode(),
+                       "modes": {"standing": "a human may make one affirmation a 24h grant",
+                                 "command": "every action asks again; no standing grant is honoured"},
+                       "standing_grants": len(broker.grants())}
+        except ValueError as exc:
+            return ui.err(str(exc))
+        if args.json:
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+        else:
+            ui.say(f"activation mode: {out['mode']}")
+            for name, why in out["modes"].items():
+                mark = "\033[32m*\033[0m" if name == out["mode"] else " "
+                ui.say(f"  {mark} {name:<9s} {why}")
+            ui.say("  switch with: brain permission mode command")
+        return 0
+
     if action == "capabilities":
         rows = [{"capability": k, **v} for k, v in sorted(CAPABILITIES.items())]
         if args.json:
@@ -3436,6 +3682,13 @@ def cmd_keygen(args, ui: UI) -> int:
 # --------------------------------------------------------------------------- #
 # parser
 # --------------------------------------------------------------------------- #
+def wake_max_window() -> int:
+    """The wake-word ceiling, imported here so --help does not need the module."""
+    from ..agent.wake import MAX_WINDOW_SECONDS
+
+    return MAX_WINDOW_SECONDS
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="brain",
@@ -3774,7 +4027,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("connectors", help="which AI services and outside services are on")
     sp.add_argument("action", nargs="?",
-                    choices=["list", "on", "off", "key", "remove-key", "test", "approve"],
+                    choices=["list", "on", "off", "key", "remove-key", "test", "approve",
+                             "integrations"],
                     default="list")
     sp.add_argument("name", nargs="*", help="connector id, e.g. gemini")
     sp.add_argument("--key-env", default=None,
@@ -3887,6 +4141,31 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--note", action="store_true", help="also print what it cannot do")
     sp.set_defaults(func=cmd_screen)
 
+    sp = sub.add_parser("wake", help='say "Nila" inside a window you open (not always-on)')
+    sp.add_argument("--window", type=int, default=0, metavar="SECONDS",
+                    help=f"how long the microphone may listen (max "
+                         f"{wake_max_window() // 60} min, default 60 s)")
+    sp.add_argument("--check", default="", metavar="WAV",
+                    help="score a recording instead of opening the microphone")
+    sp.add_argument("--no-permission-prompt", action="store_true",
+                    help="skip the microphone capability check (tests and dry runs)")
+    sp.set_defaults(func=cmd_wake)
+
+    sp = sub.add_parser("temp", help="hold a value for ONE use, never written down")
+    sp.add_argument("action", nargs="?", default="list",
+                    choices=["hold", "keep", "show", "list", "status", "purge", "clear"])
+    sp.add_argument("value", nargs="?", default="")
+    sp.add_argument("--for", dest="for_", default="", metavar="PURPOSE",
+                    help="what it is for, e.g. 'call amma tonight'")
+    sp.add_argument("--kind", default="value", help="what sort of value it is")
+    sp.add_argument("--ttl", type=int, default=0, metavar="SECONDS",
+                    help="how long it may be held (default 15 minutes)")
+    sp.add_argument("--id", default="", help="with `show`: the slot id")
+    sp.add_argument("--stdin", action="store_true", help="read the value from stdin")
+    sp.add_argument("--use", action="store_true",
+                    help="hold it and hand it over once in this same command")
+    sp.set_defaults(func=cmd_temp)
+
     sp = sub.add_parser("music", help="play songs from your own folders (no account)")
     sp.add_argument("words", nargs="*", help="words from the title or the artist")
     sp.add_argument("--folder", action="append", default=[], metavar="PATH",
@@ -3953,8 +4232,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out", default="")
     sp.set_defaults(func=cmd_keygen)
 
-    sp = sub.add_parser("device", help="multi-device enrolment")
-    sp.add_argument("action", choices=["list", "export", "import", "revoke", "rotate-key"])
+    sp = sub.add_parser("device", help="multi-device enrolment (a few, one owner)")
+    sp.add_argument("action", choices=["list", "export", "import", "revoke", "rotate-key",
+                                       "limit"])
+    sp.add_argument("count", nargs="?", type=int, default=0,
+                    help="with `limit`: the new ceiling")
     sp.add_argument("--out", default="brain-bundle.json")
     sp.add_argument("--bundle", default="")
     sp.add_argument("--label", default="")
@@ -3997,13 +4279,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_report)
 
     sp = sub.add_parser("challenge", help="issue a voice liveness challenge")
-    sp.add_argument("--style", default="digits", choices=["digits", "words"])
+    sp.add_argument("--style", default="auto",
+                    choices=["auto", "digits", "words", "tamil_digits", "tamil_words"],
+                    help="which words to be asked for; 'auto' follows your language")
     sp.set_defaults(func=cmd_challenge)
 
     sp = sub.add_parser("permission",
                         help="manage what Nila may touch on this device")
     sp.add_argument("action", choices=["list", "grant", "revoke", "deny", "affirm",
-                                       "capabilities", "panic"])
+                                       "capabilities", "panic", "mode"])
     sp.add_argument("capability", nargs="?", default="")
     sp.add_argument("--scope", default="", help="path, host or command the grant covers")
     sp.add_argument("--purpose", default="", help="shown in the prompt and the ledger")

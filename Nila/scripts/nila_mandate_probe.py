@@ -153,21 +153,43 @@ def m1_integration_audit_logs_keys_not_values():
 
 def m1_ephemeral_values_are_purged_immediately():
     """Mandate: numbers used for a temporary task must NOT be saved unless
-    Santhosh explicitly instructs storage, and unnecessary data is purged."""
-    api = []
-    for mod in ("brain/memory/store.py", "brain/agent/tools.py", "brain/agent/agent.py"):
-        api.append((ROOT / mod).read_text())
-    blob = "\n".join(api)
-    markers = ("ephemeral", "no_store", "do_not_store", "transient", "use_once")
-    found = [m for m in markers if re.search(rf"\b{m}\b", blob, re.I)]
-    if found:
-        record(PASS, "an ephemeral / do-not-store path exists", f"markers: {found}")
+    Santhosh explicitly instructs storage, and unnecessary data is purged.
+
+    This used to be a regex over the source, which proves nothing. It now runs
+    the real store: hold a canary number, take it back once, try a second time,
+    and then scan every byte the vault wrote for the number.
+    """
+    from brain.agent.ephemeral import EphemeralError, EphemeralStore
+
+    canary = "9845123789"
+    store = EphemeralStore()
+    slot = store.keep(canary, purpose="call amma once", ttl=120)
+    held = store.report()
+    first = store.take(slot.id)["value"]
+    problems = []
+    if first != canary:
+        problems.append("the value came back changed")
+    try:
+        store.take(slot.id)
+        problems.append("a second take handed the value over again")
+    except EphemeralError:
+        pass
+    if canary in json.dumps(held):
+        problems.append("the held record itself contains the value")
+    # the record that MAY be written down (the vault slot) is a digest only
+    other = EphemeralStore()
+    slot_row = other.vault_slot(other.keep(canary, "x").id)
+    if canary in json.dumps(slot_row):
+        problems.append("the vault record of a slot contains the value")
+    store.purge()
+    if store.report()["held"]:
+        problems.append("purge left values behind")
+    if problems:
+        record(FAIL, "an ephemeral / do-not-store path exists", "; ".join(problems))
     else:
-        record(GAP, "an ephemeral / do-not-store path exists",
-               "nothing marks a value use-once. Persistence is opt-in only in the "
-               "sense that the MODEL must choose not to call `remember`; there is no "
-               "enforced non-storage tier and no automatic purge. The mandate is not "
-               "violated by default, but it is not guaranteed by code either.")
+        record(PASS, "an ephemeral / do-not-store path exists",
+               "hold -> one use -> gone; the record is a salted digest (value never "
+               "written); purge empties it; RAM only, so sync and backup never see it")
 
 
 def m1_command_only_app_control():
@@ -507,31 +529,58 @@ def m3_cli_passphrase_only_yields_full_access():
 
 
 def m3_single_account_binding():
-    """Mandate: dedicated SINGLE account binding."""
-    devs = vault.data.get("devices", {}) if hasattr(vault, "data") else {}
-    src = (ROOT / "brain/memory/vault.py").read_text()
-    bounded = bool(re.search(r"max_devices|single_device|owner_binding|account_binding", src))
-    if bounded:
-        record(PASS, "device/account binding is bounded to one owner", "")
+    """Mandate: dedicated SINGLE account binding - including the devices."""
+    import tempfile as _tf
+
+    from brain.config import Config
+    from brain.memory.vault import Vault
+
+    home = pathlib.Path(_tf.mkdtemp(prefix="nila-probe-devices-"))
+    cfg = Config.load(home)
+    cfg.fast_kdf = True
+    v = Vault(cfg)
+    v.initialize("probe-passphrase-dev", "Santhosh S", "probe-dev")
+    v.set_device_limit(2)
+    bundle = v.export_bundle("probe-laptop")
+    second_home = pathlib.Path(_tf.mkdtemp(prefix="nila-probe-devices2-"))
+    cfg2 = Config.load(second_home)
+    cfg2.fast_kdf = True
+    v2 = Vault(cfg2)
+    v2.import_bundle(bundle, "probe-passphrase-dev")
+    room = v2.enrolment_room()
+    # at the ceiling: a third device must be refused, not quietly allowed
+    bundle2 = None
+    try:
+        bundle2 = v2.export_bundle("probe-phone")
+    except PermissionError:
+        pass
+    refused = bundle2 is None
+    v.lock()
+    v2.lock()
+    shutil.rmtree(home, ignore_errors=True)
+    shutil.rmtree(second_home, ignore_errors=True)
+    if room["limit"] == 2 and room["used"] == 2 and refused:
+        record(PASS, "device/account binding is bounded to one owner",
+               f"ceiling {room['limit']}, {room['used']} enrolled, a third bundle is refused")
     else:
-        record(GAP, "device/account binding is bounded to one owner",
-               f"devices currently enrolled: {len(devs)}. One shared master key is "
-               "wrapped by each device KEK and any number of devices can be added "
-               "from an enrolment bundle. There is no max-device limit, no bound "
-               "Gmail/account identity, and no owner-identity assertion. Mandate 3's "
-               "'dedicated single account' is a policy this build cannot express.")
+        record(FAIL, "device/account binding is bounded to one owner",
+               f"room={room}, third bundle refused={refused}")
 
 
 def m3_gmail_account_binding():
-    src = (ROOT / "config/integrations.example.json").read_text()
-    if "gmail" in src.lower():
-        record(GAP, "Gmail account binding", "a gmail example exists but no binding logic")
+    """The agent must refuse to act on any account but the bound one."""
+    from brain.agent.integrations import IntegrationGateway
+
+    gw = IntegrationGateway(config=None, path=HOME / "probe-integrations.json")
+    unbound = gw.account_problem("gmail", {})
+    wrong = gw.account_problem("gmail", {"account": "someone.else@gmail.com"})
+    if unbound and wrong and "bound to" in wrong:
+        record(PASS, "Gmail account binding",
+               "gmail/drive/calendar ship disabled and unbound; an unbound call and a "
+               "call naming another account are both refused BEFORE the network")
     else:
-        record(GAP, "Gmail account binding",
-               "no Gmail integration and no concept of binding the agent to one "
-               "email account. The integration registry can declare a Gmail "
-               "endpoint, but nothing asserts WHICH account, and nothing prevents "
-               "a second one being added.")
+        record(FAIL, "Gmail account binding",
+               f"unbound refusal={bool(unbound)} wrong-account refusal={bool(wrong)}")
 
 
 # =========================================================================== #
@@ -615,18 +664,26 @@ def m4_tanglish_identity_response():
 
 
 def m4_voice_challenge_language():
-    src = (ROOT / "brain/identity/liveness.py").read_text()
-    m = re.search(r'WORDS = \("([^"]+)', src)
-    words = (m.group(1).split() if m else [])[:6]
-    tamil = any("\u0b80" <= ch <= "\u0bff" for ch in src)
-    if tamil:
-        record(PASS, "the liveness challenge can be issued in Tamil", "")
+    """The phrase the owner must SAY to prove she is herself, in her language."""
+    from brain.identity.liveness import LivenessGuard
+
+    guard = LivenessGuard(key=b"probe-liveness-key-000000000000")
+    tamil = guard.issue("tamil_digits")
+    english = guard.issue("digits")
+    tamil_chars = all("\u0b80" <= ch <= "\u0bff" for ch in "".join(tamil.phrase))
+    latin = all(ch.isascii() for ch in "".join(english.phrase))
+    unknown = ""
+    try:
+        guard.issue("klingon")
+    except ValueError as exc:
+        unknown = str(exc)
+    if tamil_chars and latin and tamil.language == "ta" and unknown:
+        record(PASS, "the liveness challenge can be issued in Tamil",
+               f"say: {tamil.text()}  (style={tamil.style}, language={tamil.language}); "
+               f"an unknown style is refused instead of falling back to English")
     else:
-        record(GAP, "the liveness challenge can be issued in Tamil",
-               f"challenge vocabulary is English/digits only (e.g. {words}). A "
-               "Tamil-first owner must read English phonetic words aloud to unlock. "
-               "The MFCC backend is text-independent so Tamil speech CAN be scored, "
-               "but no Tamil phrase set is shipped and none was calibrated.")
+        record(FAIL, "the liveness challenge can be issued in Tamil",
+               f"tamil={tamil.text()!r} latin={english.text()!r} refused_unknown={bool(unknown)}")
 
 
 # =========================================================================== #
@@ -680,21 +737,32 @@ def m5_never_read_beats_a_standing_grant():
 
 
 def m5_activation_is_strictly_on_demand():
-    """Mandate: activate strictly on-demand when triggered by a command."""
-    from brain.security.permission import DURABLE_TTL_MS, CAPABILITIES
-    durable = [k for k, v in CAPABILITIES.items() if v.get("durable_ok")]
-    days = DURABLE_TTL_MS / 86400_000
-    if days <= 1 and not durable:
-        record(PASS, "activation is strictly per-command", "")
+    """Mandate: activate strictly on-demand when triggered by a command.
+
+    The old check asked whether durable grants existed at all and counted their
+    TTL. The honest question is different: can the owner have a mode where no
+    activation survives the command? Now there is one, and this drives it.
+    """
+    from brain.security.permission import Broker, CAP_FILE_READ
+
+    broker = Broker(path=HOME / "probe-perm-mode.json")
+    granted = broker.grant_durable(CAP_FILE_READ, "/tmp/probe-in")
+    before = broker.check(CAP_FILE_READ, "/tmp/probe-in").allowed
+    broker.set_mode("command")
+    after_check = broker.check(CAP_FILE_READ, "/tmp/probe-in").allowed
+    after_peek = broker.peek(CAP_FILE_READ, "/tmp/probe-in").allowed
+    refused_new = not broker.grant_durable(CAP_FILE_READ, "/tmp/probe-in").allowed
+    broker.set_mode("standing")
+    restored = broker.check(CAP_FILE_READ, "/tmp/probe-in").allowed
+    if granted.allowed and before and not after_check and not after_peek \
+            and refused_new and restored:
+        record(PASS, "activation is strictly per-command",
+               "mode 'command' stops honouring standing grants (check AND peek), "
+               "refuses to create new ones, and switching back restores the old grant")
     else:
-        record(GAP, "activation is strictly per-command",
-               f"{len(durable)} capabilities can hold a standing grant for "
-               f"{days:.0f} DAYS (fs.read, fs.list, media.photo, net.host). That is "
-               "on-demand at first use, then always-on for a week - a plugin stays "
-               "active across sessions with no fresh command. The three dangerous "
-               "capabilities (fs.write, shell.exec, data.export) are never durable, "
-               "which is the right call, but 'strictly on-demand' needs a mode where "
-               "every activation re-prompts.")
+        record(FAIL, "activation is strictly per-command",
+               f"granted={granted.allowed} before={before} after_check={after_check} "
+               f"after_peek={after_peek} refused_new={refused_new} restored={restored}")
 
 
 # --------------------------------------------------------------------------- #

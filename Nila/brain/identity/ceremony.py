@@ -102,12 +102,49 @@ class IdentityCeremony:
     # ------------------------------------------------------------------ #
     # challenge / verify
     # ------------------------------------------------------------------ #
-    def issue_challenge(self, style: str = "digits") -> Dict[str, Any]:
+    def issue_challenge(self, style: str = "auto") -> Dict[str, Any]:
+        """Issue the phrase the owner must say. ``auto`` follows her language.
+
+        The owner speaks Tamil first. Asking her to read "alpha bravo cedar"
+        aloud to prove she is herself was the one place the build forgot that -
+        and the voice maths never cared, because MFCC is text-independent.
+        ``auto`` reads the owner's language from the profile/config and picks
+        Tamil numerals when it is Tamil or Tanglish, English digits otherwise.
+        """
         if not self.vault.has_voice():
             raise CeremonyError("no voice template enrolled (run: brain enroll-voice)")
+        style = self._resolve_style(style)
         ch = self.liveness.issue(style=style)
-        self.vault.audit("challenge_issued", {"nonce": ch.nonce[:8], "style": style})
+        self.vault.audit("challenge_issued", {"nonce": ch.nonce[:8], "style": ch.style,
+                                              "language": ch.language})
         return ch.to_dict()
+
+    def _resolve_style(self, style: str) -> str:
+        """Turn ``auto`` into a concrete pool, using the owner's own language."""
+        want = str(style or "auto").strip().lower()
+        if want not in ("auto", "", "default"):
+            return want
+        language = ""
+        try:
+            from ..agent import translate
+
+            for field in ("language", "language_preference"):
+                value = str((self.config.agent or {}).get(field) or "")
+                if value:
+                    language = value
+                    break
+            if not language:
+                language = str(self.vault.data.get("owner", {}).get("language") or "")
+            if not language:
+                language = str(self.vault.data.get("language") or "")
+            if language:
+                info = translate.detect(language) if hasattr(translate, "detect") else {}
+                language = str(info.get("language") or language)
+        except Exception:                       # pragma: no cover - keep working without a hint
+            language = ""
+        if language.lower().startswith(("tamil", "tanglish")) or "ta" == language.lower():
+            return "tamil_digits"
+        return "digits"
 
     def verify_voice(self, nonce: str, audio: Any, bound: Optional[str] = None) -> Dict[str, Any]:
         """Step 2 of the ceremony. Returns scores; does NOT start a session."""

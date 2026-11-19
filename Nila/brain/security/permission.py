@@ -97,6 +97,20 @@ _PERSUASION_WORDS = ("ignore", "without reading", "trust me", "harmless", "safe 
 PROMPT_TTL_MS = 120_000          # 2 minutes to answer a prompt
 DURABLE_TTL_MS = 24 * 3600_000   # 24 hours (was 7 days; standing access should be short)
 
+#: The two ways a permission can be granted, as a policy the OWNER picks.
+#:
+#: ``standing`` (the default) is the shipped behaviour: a human may turn one
+#: affirmation into a durable grant so that reading her own notes does not ask
+#: every thirty seconds.
+#:
+#: ``command`` is the strict reading of mandate 5 - *activate strictly on
+#: demand*. In this mode NO durable grant is honoured, even one granted before
+#: the mode was set, so every single action goes back through a fresh human
+#: affirmation. The code path is deliberately blunt: the durable lookup returns
+#: nothing, so a plugin cannot stay active across commands by construction.
+MODES = ("standing", "command")
+DEFAULT_MODE = "standing"
+
 
 class PermissionError_(RuntimeError):
     """Raised when an action is refused for want of an affirmed permission."""
@@ -377,12 +391,53 @@ class Broker:
                                    "nothing is granted until it is cleared", capability, scope)
         if self.is_denied(capability, scope):
             return Decision(False, "explicitly denied by the user", capability, scope)
-        hit = self._find(capability, scope, "durable")
+        # The peek must agree with check(): in 'command' mode a standing grant is
+        # not in force, and a peek that said "allowed" would let a caller skip
+        # the very affirmation the mode exists to force.
+        hit = None if self.mode() == "command" else self._find(capability, scope, "durable")
         if hit:
             return Decision(True, "durable grant", capability, scope, grant=hit)
         if self._find(capability, scope, "one_shot"):
             return Decision(True, "affirmed one-shot available", capability, scope)
         return Decision(False, "no affirmed permission", capability, scope)
+
+    # ------------------------------------------------------------------ #
+    # the activation policy (mandate 5: strictly on demand)
+    # ------------------------------------------------------------------ #
+    def mode(self) -> str:
+        """Which activation policy is in force: ``standing`` or ``command``."""
+        try:
+            stored = str(self._load().get("mode") or DEFAULT_MODE).strip().lower()
+        except Exception:                       # pragma: no cover - unreadable file
+            stored = DEFAULT_MODE
+        return stored if stored in MODES else DEFAULT_MODE
+
+    def set_mode(self, mode: str, by: str = "cli") -> Dict[str, Any]:
+        """Choose how activations work from now on.
+
+        ``command`` is the strict mandate reading: a capability is active for the
+        single action that was affirmed, and nothing survives to the next one.
+        Switching to it is deliberate, it is audited, and it does NOT delete the
+        standing grants already recorded - it stops honouring them, which is
+        reversible the moment the owner switches back.
+        """
+        want = str(mode or "").strip().lower()
+        if want not in MODES:
+            raise ValueError(f"unknown mode '{mode}'; say one of {', '.join(MODES)}")
+        data = self._load()
+        data["mode"] = want
+        data["mode_set_at"] = now_ms()
+        data["mode_set_by"] = by
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(dumps(data))
+        os.replace(tmp, self.path)
+        self.audit("permission_mode", {"mode": want, "by": by,
+                                        "standing_grants_kept": len(self.grants())})
+        return {"ok": True, "mode": want,
+                "standing_grants_kept": len(self.grants()),
+                "effect": ("every action asks again; no standing grant is honoured"
+                           if want == "command" else
+                           "a human may turn one affirmation into a standing grant")}
 
     def check(self, capability: str, scope: str = "*", purpose: str = "") -> Decision:
         """Is this action permitted right now, without asking?
@@ -399,7 +454,7 @@ class Broker:
         if self.is_denied(capability, scope):
             return Decision(False, "explicitly denied by the user", capability, scope)
 
-        hit = self.durable(capability, scope)
+        hit = None if self.mode() == "command" else self.durable(capability, scope)
         if hit:
             return Decision(True, f"durable grant ({hit.purpose or 'no purpose recorded'})",
                             capability, scope, grant=hit)
@@ -545,6 +600,11 @@ class Broker:
         prompts.pop(prompt_id, None)            # a prompt is answered once
 
         grants = self.grants()
+        if remember and self.mode() == "command":
+            return Decision(False,
+                            "this vault is in 'command' mode, so a standing grant cannot be "
+                            "made - affirm the action itself, and it will be used once",
+                            pending.capability, pending.scope)
         if remember:
             cap = pending.capability
             if not CAPABILITIES.get(cap, {}).get("durable_ok", False):
@@ -632,6 +692,12 @@ class Broker:
             return Decision(False, f"unknown capability: {capability}", capability, scope)
         if self.panicked():
             return Decision(False, "PANIC LATCH is set - clear it before granting anything",
+                            capability, scope)
+        if self.mode() == "command":
+            return Decision(False,
+                            "this vault is in 'command' mode: permissions are activated "
+                            "per command and never made standing. Switch with "
+                            "`brain permission mode standing` if you want a standing grant.",
                             capability, scope)
         if not CAPABILITIES[capability]["durable_ok"]:
             return Decision(False,

@@ -289,6 +289,43 @@ involved. **A public address is refused**: the two PCs must be on the same Wi-Fi
 the data is ciphertext before it leaves either one. See `cloud/README.md` for running
 the server elsewhere, and `tests/test_sync_over_http_acceptance.py` for the proof.
 
+## Saying the name, and holding a number (v0.2, stage 13)
+
+    brain wake --window 120               # the microphone is open for 2 minutes
+    brain wake --check nila.wav           # score a recording (no microphone needed)
+    brain temp hold 9845123789 --for "call amma" --use
+    brain temp                            # what is held: ids and purposes, never values
+    brain temp purge                      # forget all of it now
+    brain permission mode command         # every action asks again, always
+    brain permission mode standing        # back to a grant a human may make
+    brain challenge --style tamil_digits  # the number to say, in Tamil
+    brain connectors integrations         # which account each service speaks for
+    brain connectors integrations bind gmail you@gmail.com
+    brain device limit 3                  # how many PCs may hold this brain
+
+**The wake word is not an always-on microphone.** `brain wake` opens a window, and
+the window closes: by a timer, when the name is heard, or when you stop it. The
+ceiling is 15 minutes, a longer window is refused, and opening one asks the
+`mic.listen` capability and writes both the open and the close to the audit
+journal. What matched comes back with its audio, so the speaker lock can judge the
+voice before anything is acted on - a wake word is a doorbell, not a key. The
+matcher is loudness + voicing + two-syllable shape, not a trained keyword spotter;
+`brain/agent/wake.py: LIMITS` says exactly where it stops being reliable.
+
+**A held value is never written down.** `brain temp hold` keeps the value in RAM
+against a purpose. The record that may be written is a salted digest; `--use`
+hands it over once and it is gone; it expires, or you purge it, or `brain lock`
+purges it; it is not in `memory.db`, so it is not in a backup and not in a sync.
+Because it lives in one process, a *later* command cannot see it - that is the
+point, and the command says so instead of pretending. If you want something kept,
+that is `brain remember`, a different act with a different audit line.
+
+**"Strictly per command" is a mode.** In `command` mode no standing grant is
+honoured - not by `check` and not by `peek` - a new one cannot be created, and
+switching back restores whatever was there. The three dangerous capabilities
+(`fs.write`, `shell.exec`, `data.export`) were never durable; this makes the rest
+of them behave the same way when you ask for it.
+
 ## Passphrase handling
 
 - Prefer the interactive hidden prompt.

@@ -594,15 +594,28 @@ def main() -> int:
     def packaging():
         # The newest stage ZIP beside the checkout - the name changes every stage,
         # so a hard-coded one silently skipped this check (found in stage 12).
-        candidates = sorted(ROOT.parent.glob("NILA_V02_STAGE*.zip"))
+        # Sorted by the stage NUMBER, not by name: lexically "STAGE9" sorts after
+        # "STAGE13", so the newest ZIP was not always the one checked (found
+        # when stage 13 and stage 12 both sat in the folder).
+        def stage_of(path: Path) -> int:
+            import re as _re
+
+            found = _re.search(r"STAGE(\d+)", path.name, _re.I)
+            return int(found.group(1)) if found else -1
+
+        candidates = sorted(ROOT.parent.glob("NILA_V02_STAGE*.zip"), key=stage_of)
         if not candidates:
             # Running from an extracted ZIP: there is nothing beside it to check.
             return SKIP, f"no stage ZIP next to this checkout ({ROOT.parent.name})"
         zip_path = candidates[-1]
+        # Stage 13 adds the four rows that were unfinished, and the file that
+        # proves each one so the check cannot pass on a stale ZIP.
         required = ("brain/agent/ears.py", "brain/agent/ocr.py",
                     "brain/agent/screen.py", "brain/agent/music.py",
                     "tools/sync_lan.py", "sync-host.bat", "sync-join.bat",
-                    "sync-now.bat", "getffmpeg.bat")
+                    "sync-now.bat", "getffmpeg.bat", "brain/agent/ephemeral.py",
+                    "brain/agent/wake.py", "brain/agent/progress.py",
+                    "config/integrations.example.json")
         with zipfile.ZipFile(zip_path) as z:
             names = z.namelist()
             bad = [n for n in names if "__pycache__" in n or n.endswith(".pyc")]
@@ -916,6 +929,131 @@ def main() -> int:
                 f"{embedder.name}, coverage {embedder.coverage('scooter repair'):.2f}")
 
     check("stage 12: memory can be searched by meaning, offline", meaning_search)
+
+    # ---- 31. stage 13: the rows that were only half finished --------------- #
+    def hold_one_use():
+        from brain.agent.ephemeral import EphemeralError, EphemeralStore
+
+        canary = "9845123789"
+        store = EphemeralStore()
+        slot = store.keep(canary, purpose="call amma once", ttl=60)
+        recorded = json.dumps(store.vault_slot(slot.id))
+        first = store.take(slot.id)["value"]
+        second = False
+        try:
+            store.take(slot.id)
+            second = True
+        except EphemeralError:
+            pass
+        leaked = canary in recorded
+        store.purge()
+        ok = first == canary and not second and not leaked and not store.report()["held"]
+        return (PASS if ok else FAIL,
+                f"used once={first == canary}, second use refused={not second}, "
+                f"value in any record={leaked}, purge emptied={not store.report()['held']}")
+
+    check("stage 13: a value can be held for one use, never written down", hold_one_use)
+
+    def wake_word():
+        import math
+
+        from brain.agent import wake
+        from brain.util.audio import write_wav
+
+        rate = 16000
+
+        def syllable(seconds, pitch):
+            n = int(rate * seconds)
+            return [0.5 * math.sin(math.pi * (i / n)) ** 0.7
+                    * (math.sin(2 * math.pi * pitch * i / rate)
+                       + 0.4 * math.sin(4 * math.pi * pitch * i / rate)) for i in range(n)]
+
+        audio = syllable(0.28, 190) + [0.0] * int(rate * 0.06) + syllable(0.30, 170)
+        path = Path(home) / "retest-nila.wav"
+        write_wav(path, audio, rate)
+        heard = wake.probe(str(path))
+        ceiling_refused = False
+        try:
+            wake.WakeWindow(seconds=wake.MAX_WINDOW_SECONDS + 60)
+        except wake.WakeError:
+            ceiling_refused = True
+        closed = wake.WakeWindow(seconds=30, clock=lambda: 100.0)
+        outside = False
+        try:
+            closed.feed(audio, rate)
+        except wake.WakeError:
+            outside = True
+        ok = heard["heard"] and ceiling_refused and outside
+        return (PASS if ok else FAIL,
+                f"heard the name (confidence {heard['confidence']:.2f}), "
+                f"all-day window refused={ceiling_refused}, "
+                f"word outside a window refused={outside}")
+
+    check('stage 13: the wake word "Nila" works, inside a window', wake_word)
+
+    def activation_mode():
+        from brain.security.permission import Broker
+
+        broker = Broker(path=Path(home) / "retest-permissions.json")
+        broker.grant_durable("fs.read", "/tmp/retest")
+        before = broker.check("fs.read", "/tmp/retest").allowed
+        broker.set_mode("command")
+        after = broker.check("fs.read", "/tmp/retest").allowed
+        peek_after = broker.peek("fs.read", "/tmp/retest").allowed
+        broker.set_mode("standing")
+        restored = broker.check("fs.read", "/tmp/retest").allowed
+        ok = before and not after and not peek_after and restored
+        return (PASS if ok else FAIL,
+                f"standing grant honoured={before}, refused in command mode={not after}, "
+                f"peek agrees={not peek_after}, restored on switch back={restored}")
+
+    check("stage 13: 'strictly per command' is a mode you can switch on",
+          activation_mode)
+
+    def account_binding():
+        from brain.agent.integrations import IntegrationGateway
+
+        gateway = IntegrationGateway(config=None, path=Path(home) / "retest-integrations.json")
+        unbound = gateway.account_problem("gmail", {})
+        wrong = gateway.account_problem("gmail", {"account": "someone@else.com"})
+        both = bool(unbound) and bool(wrong)
+        ok = both and "gmail" in gateway.bindings()["integrations"]
+        return (PASS if ok else FAIL,
+                f"gmail/drive/calendar declared, unbound call refused={bool(unbound)}, "
+                f"wrong-account call refused={bool(wrong)}")
+
+    check("stage 13: one integration speaks for one account", account_binding)
+
+    def device_ceiling():
+        from brain.config import Config
+        from brain.memory.vault import Vault
+
+        first_home = Path(home) / "ceiling-pc1"
+        cfg = Config.load(first_home)
+        cfg.fast_kdf = True
+        host = Vault(cfg)
+        host.initialize("retest-passphrase-1", "Owner", "dev-a")
+        host.set_device_limit(2)
+        bundle = host.export_bundle("pc2")
+        host.lock()
+        cfg2 = Config.load(Path(home) / "ceiling-pc2")
+        cfg2.fast_kdf = True
+        second = Vault(cfg2)
+        second.import_bundle(bundle, "retest-passphrase-1")
+        room = second.enrolment_room()
+        refused = False
+        try:
+            second.export_bundle("pc3")
+        except PermissionError:
+            refused = True
+        second.lock()
+        ok = room["used"] == 2 and room["limit"] == 2 and refused
+        return (PASS if ok else FAIL,
+                f"ceiling {room['limit']}, enrolled {room['used']}, "
+                f"third device refused={refused}")
+
+    check("stage 13: a fourth device cannot join (one owner, a few devices)",
+          device_ceiling)
 
     memory.close()
     vault.lock()

@@ -200,6 +200,67 @@ class Vault:
         return dict(self.data.get("devices", {}))
 
     # ------------------------------------------------------------------ #
+    # how many devices may share this brain (mandate 3: one owner)
+    # ------------------------------------------------------------------ #
+    #: The mandate asks for a *dedicated single-account* brain. Nothing in the
+    #: build said how many devices could hold the master key, so any number
+    #: could be enrolled from a bundle and none of them had to be the owner's.
+    #: Three is the deliberate ceiling: a PC, a laptop and a phone is the shape
+    #: the owner actually has; a fourth device is a decision, not an accident.
+    MAX_DEVICES = 3
+
+    def device_limit(self) -> int:
+        """The ceiling in force, from the policy block if the owner set one."""
+        try:
+            value = int((self.data.get("policy") or {}).get("max_devices")
+                        or self.MAX_DEVICES)
+        except (TypeError, ValueError):
+            value = self.MAX_DEVICES
+        return max(1, min(10, value))
+
+    def enrolment_room(self) -> Dict[str, Any]:
+        """How many devices may still be enrolled, and whether a new one must
+        replace an old one first."""
+        used = self._device_count_across_devices()
+        limit = self.device_limit()
+        return {"used": used, "limit": limit, "left": max(0, limit - used),
+                "full": used >= limit,
+                "devices": sorted(self.devices().keys()),
+                "how_to_make_room": ("revoke a device you no longer use: "
+                                     "`brain device revoke --device-id dev-...`")}
+
+    def set_device_limit(self, count: int) -> Dict[str, Any]:
+        """Change the ceiling ON PURPOSE, and say what it does to the count."""
+        try:
+            want = int(count)
+        except (TypeError, ValueError):
+            raise ValueError("the limit is a number, e.g. `brain device limit 4`")
+        if not 1 <= want <= 10:
+            raise ValueError("a device limit must be between 1 and 10; this is one "
+                             "owner's own brain, not a fleet")
+        used = len(self.devices())
+        if want < used:
+            raise ValueError(
+                f"{used} devices are already enrolled, so the ceiling cannot go below "
+                f"{used} - revoke one first")
+        policy = dict(self.data.get("policy") or {})
+        policy["max_devices"] = want
+        self.data["policy"] = policy
+        self.save()
+        self.audit("device_limit_set", {"limit": want, "used": used})
+        return {"ok": True, "limit": want, "used": used,
+                "left": max(0, want - used), **self.enrolment_room()}
+
+    def _require_room(self) -> None:
+        room = self.enrolment_room()
+        if room["full"]:
+            raise PermissionError(
+                f"this brain already holds its maximum of {room['limit']} devices "
+                f"({', '.join(room['devices'])}). One owner, a few devices: revoke one "
+                f"first - {room['how_to_make_room']} - or raise the ceiling on purpose "
+                f"with `brain device limit 4`.")
+
+    # ------------------------------------------------------------------ #
     # KDF helpers
     # ------------------------------------------------------------------ #
     def _kek(self, passphrase: str) -> bytes:
@@ -647,6 +708,25 @@ class Vault:
         """
         if not self._session:
             raise RuntimeError("unlock the vault before exporting a bundle")
+        # Every device that can mint a bundle is a device that holds the key, so it
+        # belongs in the shared list. Registering here (once) is what makes the
+        # count grow across hops: PC1 exports -> blob {dev1}; PC2 imports and
+        # exports -> blob {dev1, dev2}; PC3 is then refused at the ceiling.
+        self.register_device(self.device_id, label=f"device {self.device_id[-4:]}")
+        # A bundle becomes exactly one more device, so this is where "one owner, a
+        # few devices" is actually enforced: the side that knows the full list.
+        # Checking it on the importing side cannot work - a new vault has no list.
+        room = self.enrolment_room()
+        # A bundle is minted for a device that is not enrolled yet. This device is
+        # already in the count, so the question is whether ONE MORE fits - and a
+        # device that newly imported the brain must be able to hand it on to the
+        # phone before the ceiling is reached.
+        if room["left"] < 1:
+            raise PermissionError(
+                f"this brain already holds its maximum of {room['limit']} devices "
+                f"({room['used']} enrolled), so no new bundle will be made. "
+                f"Revoke one first (`brain device revoke --device-id dev-...`), or "
+                f"raise the ceiling on purpose with `brain device limit N`.")
         payload = {
             "magic": BUNDLE_MAGIC,
             "version": 1,
@@ -664,6 +744,14 @@ class Vault:
             "label": label,
             "exported_from": self.device_id,
             "exported_at": now_ms(),
+            #: How many devices already hold this brain. The importing side needs
+            #: this to enforce the ceiling before it writes anything; its own
+            #: device map is empty at that moment. The count comes from the SHARED
+            #: identity blob, not this vault's own map - a second PC's map knows
+            #: only itself, so counting from it would restart at 1 on every hop and
+            #: the ceiling would never be reached.
+            "device_count": self._device_count_across_devices(),
+            "device_limit": self.device_limit(),
         }
         payload["bundle_mac"] = b64e(mac(self._session.mk,
                                          json.dumps({k: v for k, v in payload.items()
@@ -671,6 +759,17 @@ class Vault:
                                                     sort_keys=True).encode()))
         self.audit("bundle_exported", {"label": label, "to": "new-device"})
         return payload
+
+    def _device_count_across_devices(self) -> int:
+        """How many devices this brain has enrolled, as the shared blob knows it."""
+        count = len(self.devices())
+        try:
+            identity = self._identity()
+            shared = ((identity.get("meta") or {}).get("devices") or {})
+            count = max(count, len(shared))
+        except Exception:                      # pragma: no cover - unreadable blob
+            pass
+        return count
 
     def _identity_blob_without_voice(self) -> Optional[str]:
         """Re-seal a copy of the identity blob with the voice entry removed."""
@@ -682,6 +781,22 @@ class Vault:
             return None
         identity = {k: v for k, v in identity.items() if k != "voice"}
         return b64e(encrypt(json.dumps(identity).encode(), self._session.mk, aad=IDENT_AAD))
+
+    def register_device(self, dev_id: str, label: str = "device") -> Dict[str, Any]:
+        """Record a device in the SHARED identity blob, so every device sees it.
+
+        The per-vault ``devices`` map only knows the devices that enrolled *into
+        this vault*, so a second PC's map holds one entry forever. The identity
+        blob travels (it is inside every bundle), which makes it the only place a
+        device count can be counted from across the house.
+        """
+        def apply(identity):
+            devices = identity.setdefault("meta", {}).setdefault("devices", {})
+            devices[dev_id] = {"label": label, "enrolled_at": now_ms()}
+            return dict(devices)
+
+        devices = self._mutate_identity(apply)
+        return {"device_id": dev_id, "devices": devices, "count": len(devices)}
 
     def import_bundle(self, bundle: Dict[str, Any], passphrase: str,
                       device_label: str = "") -> Dict[str, Any]:
@@ -709,6 +824,25 @@ class Vault:
             raise PermissionError("cannot decrypt identity blob") from exc
 
         label = device_label or bundle.get("label") or "device-2"
+        # The ceiling is checked HERE, before anything is written: a vault with
+        # its device list full must not accept a fourth KEK wrap, because
+        # accepting it is what makes "one owner, a few devices" untrue.
+        limit = max(1, min(10, int((bundle.get("policy") or {}).get("max_devices")
+                                    or self.MAX_DEVICES)))
+        # The bundle carries the identity blob, and the identity blob carries the
+        # list of enrolled devices - that is the count that matters, because a
+        # brand-new vault's own `devices` map holds only itself. The bundle's
+        # `device_count` is written by `export_bundle` so the importing side can
+        # refuse before it writes anything.
+        already = int(bundle.get("device_count") or 0)
+        if not already:
+            already = 1        # an old bundle from before the count existed
+        if already >= limit:
+            raise PermissionError(
+                f"the brain this bundle came from already holds {already} of {limit} "
+                f"devices, so this one would be over the ceiling. Revoke a device you "
+                f"no longer use on a device you still have, then export a fresh bundle "
+                f"- or raise the limit there with `brain device limit N`.")
         dev_id = "dev-" + b64e(mac(mk, label.encode()))[:12]
         self.data.update({
             "created_at": now_ms(), "user": bundle.get("user", "owner"), "device_id": dev_id,
@@ -722,24 +856,47 @@ class Vault:
         })
         self.save()
         self._start_session(mk, mode="bundle-import", degraded=False, device_id=dev_id)
-        # register this device with the others (so it can be revoked later)
-        def apply(identity):
-            identity.setdefault("meta", {}).setdefault("devices", {})[dev_id] = {
-                "label": label, "enrolled_at": now_ms()}
-        self._mutate_identity(apply)
+        # register this device with the others (so it can be revoked later AND so
+        # the next hop's bundle carries the real count)
+        self.register_device(dev_id, label=label)
         self.audit("device_enrolled", {"device": dev_id, "label": label,
                                        "from": bundle.get("exported_from", "")})
         return {"device_id": dev_id, "label": label, "user": self.user}
 
     def revoke_device(self, device_id: str) -> bool:
+        """Remove a device from BOTH lists, and free its slot under the ceiling.
+
+        Both, because they answer different questions: the local map says "this
+        vault's key is wrapped for that device", and the shared identity list is
+        what the device ceiling is counted from. Revoking only the first left the
+        slot permanently full - the vault would refuse a replacement forever, and
+        the only way out would be a hand-edited file.
+        """
         if device_id == self.device_id:
             raise ValueError("cannot revoke the device you are using")
+        removed = False
         devices = self.data.get("devices", {})
-        if device_id not in devices:
+        if device_id in devices:
+            devices.pop(device_id)
+            removed = True
+        if self._session:
+            def apply(identity):
+                shared = (identity.get("meta") or {}).get("devices") or {}
+                if device_id in shared:
+                    shared.pop(device_id)
+                    identity.setdefault("meta", {})["devices"] = shared
+                    return True
+                return False
+
+            try:
+                removed = bool(self._mutate_identity(apply)) or removed
+            except Exception:                  # pragma: no cover - kept best effort
+                pass
+        if not removed:
             return False
-        devices.pop(device_id)
         self.save()
-        self.audit("device_revoked", {"device": device_id})
+        self.audit("device_revoked", {"device": device_id,
+                                      "room": self.enrolment_room()})
         return True
 
     def rotate_master_key(self, passphrase: str) -> Dict[str, Any]:

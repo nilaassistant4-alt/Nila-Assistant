@@ -37,6 +37,38 @@ DIGITS = "one two three four five six seven eight nine zero".split()
 WORDS = ("alpha bravo cedar delta echo foxtrot gamma harbor indigo juliet kilo "
          "lotus mango nectar omega pico quill rover solar tulip umber violet "
          "willow xenon yankee zephyr").split()
+
+#: The challenge has to be spoken by the owner, so it has to be in a language the
+#: owner actually speaks aloud. A Tamil-first owner was being asked to read
+#: English phonetic words ("alpha bravo cedar") to prove she was herself - the
+#: MFCC backend is text-independent, so nothing about the maths needed English.
+#: It was missing a shipped word list, and a list is cheap.
+#:
+#: These are ordinary Tamil words with strong, distinct vowel/consonant shapes,
+#: no proper nouns, nothing that becomes a different word with a different
+#: ending, and nothing longer than three syllables - a long word re-read is a
+#: long recording, and it drags past the duration window.
+TAMIL_WORDS = ("அம்மா அப்பா வீடு தண்ணீர் பால் சோறு மரம் பூ காற்று நிலா "
+               "கடல் மலை பறவை வானம் நெருப்பு மண் வழி கண் கை பாடல்").split()
+#: Tamil numerals, spoken the way a number is read out - which is what a
+#: nonce challenge needs: a sequence an attacker cannot guess and a replay
+#: cannot reuse.
+TAMIL_DIGITS = "ஒன்று இரண்டு மூன்று நான்கு ஐந்து ஆறு ஏழு எட்டு ஒன்பது பூஜ்யம்".split()
+
+#: style -> the pool it draws from. Anything not listed raises at issue time
+#: instead of silently falling back to English, because a silent fallback is
+#: exactly how "Tamil challenges" would be reported as working when they were not.
+POOLS: Dict[str, List[str]] = {
+    "digits": DIGITS,
+    "tamil_digits": TAMIL_DIGITS,
+    "words": WORDS,
+    "tamil_words": TAMIL_WORDS,
+}
+
+#: The styles a caller may ask for when it does not care which language: digits
+#: first because a spoken number is the strongest anti-replay challenge.
+STYLES = ("digits", "tamil_digits", "words", "tamil_words")
+
 DEFAULT_TTL_SECONDS = 90
 
 
@@ -48,12 +80,18 @@ class Challenge:
     expires_at: int
     bound: str = ""          # HMAC over (nonce || phrase) - client must echo it
     attempts: int = 0
+    #: which pool the phrase came from, so the reply can say "say this in Tamil"
+    #: and so a caller can check the language it asked for is the one it got.
+    style: str = "digits"
+    language: str = "en"
 
     def text(self) -> str:
         return " ".join(self.phrase)
 
     def to_dict(self) -> Dict[str, Any]:
         return {"nonce": self.nonce, "phrase": self.phrase, "text": self.text(),
+                "style": self.style, "language": self.language,
+                "script": ("tamil" if self.language == "ta" else "latin"),
                 "issued_at": self.issued_at, "expires_at": self.expires_at,
                 "bound": self.bound}
 
@@ -88,11 +126,16 @@ class LivenessGuard:
         return hmac.new(self.key, msg, hashlib.sha256).hexdigest()[:32]
 
     def issue(self, style: str = "digits") -> Challenge:
-        pool = DIGITS if style == "digits" else WORDS
+        key = str(style or "digits").strip().lower()
+        pool = POOLS.get(key)
+        if not pool:
+            raise ValueError(
+                f"unknown challenge style '{style}'; say one of {', '.join(POOLS)}")
         phrase = [pool[secrets.randbelow(len(pool))] for _ in range(self.challenge_len)]
         nonce = secrets.token_urlsafe(18)
         ch = Challenge(nonce=nonce, phrase=phrase, issued_at=now_ms(),
-                       expires_at=now_ms() + self.ttl * 1000)
+                       expires_at=now_ms() + self.ttl * 1000,
+                       style=key, language="ta" if key.startswith("tamil") else "en")
         ch.bound = self._bind(nonce, phrase)
         self._outstanding[nonce] = ch
         self._used_nonces.append(nonce)

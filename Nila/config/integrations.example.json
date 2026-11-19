@@ -7,78 +7,298 @@
     "    literal secrets are rejected at load/call time",
     "  * allow_hosts is enforced; plain http is loopback-only",
     "  * every call is rate limited and written to the hash-chained audit journal",
-    "  * path/query/body templates may only reference declared {{param.NAME}} placeholders"
+    "  * path/query/body templates may only reference declared {{param.NAME}} placeholders",
+    "  * an integration that acts on YOUR account must name it in \"account\" (single-account binding, mandate 3); a call naming any other account is refused"
   ],
   "integrations": [
     {
       "name": "local_echo",
       "description": "Zero-config loopback demo integration (no secret, no network egress).",
       "base_url": "http://127.0.0.1:8787",
-      "allow_hosts": ["127.0.0.1", "localhost"],
+      "allow_hosts": [
+        "127.0.0.1",
+        "localhost"
+      ],
       "enabled": false,
       "timeout": 5,
       "rate_limit_per_minute": 30,
-      "auth": {"type": "none"},
+      "auth": {
+        "type": "none"
+      },
       "operations": [
-        {"name": "ping", "method": "GET", "path": "/health", "description": "health check"}
-      ]
+        {
+          "name": "ping",
+          "method": "GET",
+          "path": "/health",
+          "description": "health check"
+        }
+      ],
+      "account": ""
     },
     {
       "name": "calendar",
       "description": "Google Calendar via a self-hosted bridge you control.",
       "base_url": "https://bridge.example.internal",
-      "allow_hosts": ["bridge.example.internal"],
+      "allow_hosts": [
+        "bridge.example.internal"
+      ],
       "timeout": 15,
       "rate_limit_per_minute": 30,
       "enabled": false,
-      "auth": {"type": "bearer", "$env": "CALENDAR_BRIDGE_TOKEN"},
-      "headers": {"X-Client": "personal-brain"},
+      "auth": {
+        "type": "bearer",
+        "$env": "CALENDAR_BRIDGE_TOKEN"
+      },
+      "headers": {
+        "X-Client": "personal-brain"
+      },
       "operations": [
-        {"name": "list_events", "method": "GET", "path": "/v1/calendars/{{param.calendar}}/events",
-         "params": {"query": {"timeMin": "{{param.time_min}}", "maxResults": "{{param.max}}"}}},
-        {"name": "create_event", "method": "POST", "path": "/v1/calendars/{{param.calendar}}/events",
-         "required": ["summary", "start"],
-         "params": {"json": {"summary": "$param.summary", "start": {"dateTime": "$param.start"},
-                              "end": {"dateTime": "$param.end"}, "description": "$param.notes"}}}
-      ]
+        {
+          "name": "list_events",
+          "method": "GET",
+          "path": "/v1/calendars/{{param.calendar}}/events",
+          "params": {
+            "query": {
+              "timeMin": "{{param.time_min}}",
+              "maxResults": "{{param.max}}"
+            }
+          }
+        },
+        {
+          "name": "create_event",
+          "method": "POST",
+          "path": "/v1/calendars/{{param.calendar}}/events",
+          "required": [
+            "summary",
+            "start"
+          ],
+          "params": {
+            "json": {
+              "summary": "$param.summary",
+              "start": {
+                "dateTime": "$param.start"
+              },
+              "end": {
+                "dateTime": "$param.end"
+              },
+              "description": "$param.notes"
+            }
+          }
+        }
+      ],
+      "account": ""
     },
     {
       "name": "notion",
       "description": "Notion API (official). Token via env var - never in this file.",
       "base_url": "https://api.notion.com",
-      "allow_hosts": ["api.notion.com"],
+      "allow_hosts": [
+        "api.notion.com"
+      ],
       "timeout": 20,
       "rate_limit_per_minute": 45,
       "enabled": false,
-      "auth": {"type": "bearer", "$env": "NOTION_TOKEN"},
-      "headers": {"Notion-Version": "2022-06-28"},
+      "auth": {
+        "type": "bearer",
+        "$env": "NOTION_TOKEN"
+      },
+      "headers": {
+        "Notion-Version": "2022-06-28"
+      },
       "operations": [
-        {"name": "search", "method": "POST", "path": "/v1/search",
-         "required": ["query"],
-         "params": {"json": {"query": "$param.query", "page_size": 10}}},
-        {"name": "append_block", "method": "PATCH", "path": "/v1/blocks/{{param.block_id}}/children",
-         "required": ["block_id", "text"],
-         "params": {"json": {"children": [{"object": "block", "type": "paragraph",
-                                            "paragraph": {"rich_text": [{"type": "text",
-                                             "text": {"content": "$param.text"}}]}}]}}}
-      ]
+        {
+          "name": "search",
+          "method": "POST",
+          "path": "/v1/search",
+          "required": [
+            "query"
+          ],
+          "params": {
+            "json": {
+              "query": "$param.query",
+              "page_size": 10
+            }
+          }
+        },
+        {
+          "name": "append_block",
+          "method": "PATCH",
+          "path": "/v1/blocks/{{param.block_id}}/children",
+          "required": [
+            "block_id",
+            "text"
+          ],
+          "params": {
+            "json": {
+              "children": [
+                {
+                  "object": "block",
+                  "type": "paragraph",
+                  "paragraph": {
+                    "rich_text": [
+                      {
+                        "type": "text",
+                        "text": {
+                          "content": "$param.text"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "account": ""
     },
     {
       "name": "github",
       "description": "GitHub REST. Uses a fine-grained PAT with the least scope you need.",
       "base_url": "https://api.github.com",
-      "allow_hosts": ["api.github.com"],
+      "allow_hosts": [
+        "api.github.com"
+      ],
       "timeout": 20,
       "rate_limit_per_minute": 40,
       "enabled": false,
-      "auth": {"type": "bearer", "$env": "GITHUB_TOKEN"},
-      "headers": {"X-GitHub-Api-Version": "2022-11-28"},
+      "auth": {
+        "type": "bearer",
+        "$env": "GITHUB_TOKEN"
+      },
+      "headers": {
+        "X-GitHub-Api-Version": "2022-11-28"
+      },
       "operations": [
-        {"name": "my_issues", "method": "GET", "path": "/issues",
-         "params": {"query": {"state": "{{param.state}}", "per_page": "{{param.max}}"}}},
-        {"name": "create_issue", "method": "POST", "path": "/repos/{{param.repo}}/issues",
-         "required": ["repo", "title"],
-         "params": {"json": {"title": "$param.title", "body": "$param.body"}}}
+        {
+          "name": "my_issues",
+          "method": "GET",
+          "path": "/issues",
+          "params": {
+            "query": {
+              "state": "{{param.state}}",
+              "per_page": "{{param.max}}"
+            }
+          }
+        },
+        {
+          "name": "create_issue",
+          "method": "POST",
+          "path": "/repos/{{param.repo}}/issues",
+          "required": [
+            "repo",
+            "title"
+          ],
+          "params": {
+            "json": {
+              "title": "$param.title",
+              "body": "$param.body"
+            }
+          }
+        }
+      ],
+      "account": ""
+    },
+    {
+      "name": "gmail",
+      "description": "Gmail REST through a bridge you control. ONE account, named below - a call naming any other account is refused before it leaves the machine.",
+      "base_url": "https://bridge.example.internal",
+      "allow_hosts": [
+        "bridge.example.internal"
+      ],
+      "timeout": 20,
+      "rate_limit_per_minute": 20,
+      "enabled": false,
+      "account": "",
+      "auth": {
+        "type": "bearer",
+        "$env": "GMAIL_BRIDGE_TOKEN"
+      },
+      "operations": [
+        {
+          "name": "list_messages",
+          "method": "GET",
+          "path": "/v1/gmail/messages",
+          "description": "the newest messages in the bound inbox",
+          "params": {
+            "query": {
+              "maxResults": "{{param.max}}",
+              "q": "{{param.query}}"
+            }
+          }
+        },
+        {
+          "name": "get_message",
+          "method": "GET",
+          "path": "/v1/gmail/messages/{{param.id}}",
+          "description": "one message, by id"
+        },
+        {
+          "name": "send_message",
+          "method": "POST",
+          "path": "/v1/gmail/messages/send",
+          "description": "send from the bound account",
+          "params": {
+            "json": {
+              "to": "$param.to",
+              "subject": "$param.subject",
+              "body": "$param.body"
+            }
+          },
+          "required": [
+            "to",
+            "subject",
+            "body"
+          ]
+        },
+        {
+          "name": "whoami",
+          "method": "GET",
+          "path": "/v1/me",
+          "description": "which account this token belongs to - checked against the binding"
+        }
+      ]
+    },
+    {
+      "name": "drive",
+      "description": "Google Drive REST through a bridge you control. ONE account, named below.",
+      "base_url": "https://bridge.example.internal",
+      "allow_hosts": [
+        "bridge.example.internal"
+      ],
+      "timeout": 30,
+      "rate_limit_per_minute": 20,
+      "enabled": false,
+      "account": "",
+      "auth": {
+        "type": "bearer",
+        "$env": "DRIVE_BRIDGE_TOKEN"
+      },
+      "operations": [
+        {
+          "name": "list_files",
+          "method": "GET",
+          "path": "/v1/drive/files",
+          "description": "the newest files in the bound account",
+          "params": {
+            "query": {
+              "pageSize": "{{param.max}}",
+              "q": "{{param.query}}"
+            }
+          }
+        },
+        {
+          "name": "get_file",
+          "method": "GET",
+          "path": "/v1/drive/files/{{param.id}}",
+          "description": "one file's metadata, by id"
+        },
+        {
+          "name": "whoami",
+          "method": "GET",
+          "path": "/v1/me",
+          "description": "which account this token belongs to - checked against the binding"
+        }
       ]
     }
   ]

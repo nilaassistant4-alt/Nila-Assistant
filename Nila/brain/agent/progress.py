@@ -130,20 +130,40 @@ FEATURES: List[Dict[str, Any]] = [
     # ---- left out on purpose, or built in the safe half --------------- #
     {"group": "later", "label": 'Screen viewing (screenshot -> read it back)', "state": 'done', "check": 'brain.agent.screen:read',
      "note": 'built as the safe half: Nila never captures your screen. You press Win+Shift+S, give her the picture (`brain screen`), and she reads the words in it. What the picture *means* still needs a vision model.'},
-    {"group": "later", "label": 'Always-on wake word', "state": 'missing',
-     "note": 'refused by design: an all-day microphone is a battery and privacy cost. Press-to-talk exists.'},
+    {"group": "later", "label": 'Wake word ("Nila"), inside a window you open', "state": 'done',
+     "check": 'brain.agent.wake:WakeWindow',
+     "note": 'say the name instead of pressing a key: `brain wake --window 120` opens the '
+             'microphone for two minutes, hears "Nila" (or "hey Nila" / "நிலா"), and stops. '
+             'The window is a capability asked once per opening, it closes itself, and the '
+             'ceiling is 15 minutes - an always-on microphone is still refused, on purpose. '
+             'What matched comes back with its audio so the speaker lock judges it first. '
+             'No microphone? `brain wake --check file.wav` scores a recording. LIMITS says '
+             'plainly that this is a shape matcher, not a neural spotter.'},
     {"group": "later", "label": 'Music player', "state": 'done', "check": 'brain.agent.music:library',
      "note": "plays the songs already on your PC (`brain music`): tags read from the files, the folder remembered once, and Windows' own player does the playing. No account, no download, no background daemon."},
     {"group": "later", "label": 'Gmail / Drive / Calendar write (OAuth)', "state": 'partial', "check": 'brain.util.ics:add_event',
-     "note": 'calendar is WRITTEN now, but to a local .ics with a stable UID and a rising SEQUENCE, so importing it again replaces the event instead of duplicating it - `brain calendar --add`. Writing straight into Google still needs OAuth, and Gmail and Drive are not started.'},
+     "note": 'calendar is WRITTEN (local .ics, stable UID, rising SEQUENCE, `brain calendar --add`), '
+             'and Gmail + Drive now exist as declared, disabled integrations with single-account '
+             'binding: an unbound account, or a call naming any other account, is refused before '
+             'the network (`brain connectors integrations bind gmail you@gmail.com`). What is still '
+             'missing is the Google OAuth handshake itself - the build will not pretend a token '
+             'it does not have.'},
     {"group": "later", "label": 'Phone app (Android) and multi-user', "state": 'missing',
      "note": 'v3. Telegram already answers from the phone (`nila-phone.bat`), which is the part he asked for; a native app is a different project.'},
     {"group": "later", "label": 'Neural speaker model (ECAPA / x-vector)', "state": 'missing',
      "note": 'v3: would raise the ceiling above the current MFCC+pitch voiceprint, and it needs a neural model download, so it is not pretended here.'},
-    {"group": "later", "label": 'OCR for scanned pages, and ffmpeg scene detect', "state": 'partial', "check": 'brain.agent.ocr:read',
+    {"group": "later", "label": 'OCR for scanned pages, and ffmpeg scene detect', "state": 'done', "check": 'brain.agent.ocr:read',
      "note": "both halves are here without a binary: scanned PDF pages are read by the built-in OCR (`brain ocr`, pure-Python PNG decode) and scene cuts are read from the video's own keyframe index (`brain media scenes`). What still wants a decoder: comparing every frame to the next, and finding silence - getffmpeg.bat installs ffmpeg, then --run cuts without re-encoding."},
-    {"group": "later", "label": 'Fine-tuned Tamil model, local mesh (2 PCs)', "state": 'partial', "check": 'tools.sync_lan:join_code',
-     "note": 'the 2-PC half is built the way he will use it: sync-host.bat on one PC, sync-join.bat on the other with the address and the six-group code, sync-now.bat to catch up. Same Wi-Fi only, nothing to the internet, ciphertext end to end. The fine-tuned Tamil model is still v3 - it needs a training set and a GPU.'},
+    {"group": "later", "label": 'Two PCs, one memory (same Wi-Fi)', "state": 'done',
+     "check": 'tools.sync_lan:join_code',
+     "note": 'sync-host.bat on one PC prints a six-group join code, sync-join.bat on the other '
+             'takes the address and the code, sync-now.bat catches up. Ciphertext end to end, '
+             'nothing to the internet, same Wi-Fi only. This used to sit in the same row as the '
+             'Tamil model, which made a finished feature look half-done.'},
+    {"group": "later", "label": 'Fine-tuned Tamil model', "state": 'missing',
+     "note": 'v3: a Tamil model tuned on your own speech needs a labelled training set and a GPU '
+             'run. The Tamil that exists now is a pipeline (detect, answer, speak) with '
+             'off-the-shelf parts - saying otherwise would be the lie that matters.'},
 ]
 
 #: Fill these in and the `partial` rows above become `done`. Kept separate so the

@@ -13,6 +13,7 @@ Design constraints (see docs/ARCHITECTURE.md §7):
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import urllib.error
@@ -72,12 +73,41 @@ class Integration:
     #: refusal, not a permission.
     enabled: bool = False
     description: str = ""
+    #: Mandate 3: "dedicated single-account binding". One integration is ONE
+    #: account - the owner's - and that account is written down here, so a call
+    #: can be checked against it instead of against a hope. Empty means the
+    #: owner has not said which account yet, and then nothing about identity can
+    #: be asserted (which is honest, and different from claiming a binding).
+    account: str = ""
 
     def describe(self) -> Dict[str, Any]:
         return {"name": self.name, "base_url": self.base_url, "enabled": self.enabled,
-                "description": self.description,
+                "description": self.description, "account": self.account,
+                "bound": bool(self.account),
                 "auth_type": self.auth.get("type", "none"),
                 "operations": [op.describe() for op in self.operations.values()]}
+
+
+#: Hosts that mean "an account of yours" rather than "a public service". A call
+#: to one of these can only be checked against a bound identity, which is why
+#: they are singled out by name instead of guessed from the URL at call time.
+ACCOUNT_HOSTS = ("gmail", "googleapis", "google.com", "graph.microsoft", "outlook",
+                 "office365", "yahoo", "icloud", "protonmail", "zoho")
+ACCOUNT_WORDS = ("gmail", "drive", "calendar", "mail", "outlook", "contacts")
+
+
+def _is_account_integration(integ: "Integration") -> bool:
+    """Does this integration act on an account of the owner's?"""
+    blob = " ".join([integ.name, integ.base_url, integ.description or ""]).lower()
+    if any(w in blob for w in ACCOUNT_WORDS):
+        return True
+    host = (urllib.parse.urlparse(integ.base_url).hostname or "").lower()
+    return any(h in host for h in ACCOUNT_HOSTS)
+
+
+def _same_account(a: str, b: str) -> bool:
+    """Compare account names the way a mail server does: case does not matter."""
+    return str(a or "").strip().lower() == str(b or "").strip().lower()
 
 
 @dataclass
@@ -127,13 +157,128 @@ class IntegrationGateway:
             operations=ops, allow_hosts=list(raw.get("allow_hosts", []) or []),
             timeout=float(raw.get("timeout", DEFAULT_TIMEOUT)),
             rate_limit_per_minute=int(raw.get("rate_limit_per_minute", 60)),
-            enabled=bool(raw.get("enabled", False)), description=raw.get("description", ""))
+            enabled=bool(raw.get("enabled", False)), description=raw.get("description", ""),
+            account=str(raw.get("account") or "").strip())
 
     def describe(self) -> List[Dict[str, Any]]:
         return [i.describe() for i in self.integrations.values() if i.enabled]
 
     def names(self) -> List[str]:
         return [n for n, i in self.integrations.items() if i.enabled]
+
+    # ------------------------------------------------------------------ #
+    # single-account binding (mandate 3)
+    # ------------------------------------------------------------------ #
+    def bindings(self) -> Dict[str, Any]:
+        """Every integration that touches an ACCOUNT, and whether it is bound.
+
+        Gmail, Drive and Calendar are the ones that matter: an agent that can
+        read two inboxes is not bound to one owner, and nothing in the shipped
+        build ever asserted *which* account an integration spoke for. This does
+        not invent OAuth; it records the identity and refuses to call when the
+        answer is ambiguous, or when the call names an account that is not the
+        bound one.
+        """
+        rows: Dict[str, Any] = {}
+        for name, integ in sorted(self.integrations.items()):
+            if not _is_account_integration(integ):
+                continue
+            rows[name] = {"account": integ.account, "bound": bool(integ.account),
+                          "enabled": integ.enabled,
+                          "host": urllib.parse.urlparse(integ.base_url).hostname or "",
+                          "why": ("an account integration must name its one account"
+                                  if not integ.account else "bound to one account")}
+        return {"ok": True, "count": len(rows),
+                "unbound": sorted(n for n, r in rows.items() if not r["bound"]),
+                "integrations": rows,
+                "note": ("one integration speaks for one account. An unbound account "
+                         "integration is refused rather than allowed to guess - "
+                         "`brain integrations bind gmail you@gmail.com`.")}
+
+    def bind_account(self, name: str, account: str) -> Dict[str, Any]:
+        """Write the account an integration speaks for, into the live config file."""
+        account = str(account or "").strip()
+        if not account:
+            raise IntegrationError("say which account, e.g. you@gmail.com")
+        path = self.path
+        data = {"integrations": []}
+        if path.exists():
+            try:
+                data = json.loads(path.read_bytes())
+            except Exception as exc:
+                raise IntegrationError(f"could not read {path}: {exc}") from exc
+        rows = data.get("integrations") or []
+        target = None
+        for row in rows:
+            if str(row.get("name")) == name:
+                target = row
+                break
+        if target is None:
+            raise IntegrationError(
+                f"integration '{name}' is not in {path}. Add it from "
+                f"config/integrations.example.json first, then bind it.")
+        existing = str(target.get("account") or "").strip()
+        if existing and existing != account:
+            # Rebinding silently is how an agent ends up speaking for a second
+            # account without anyone noticing. Changing it is allowed, but it is
+            # recorded as a change, not as an initial binding.
+            self.audit_note("integration_rebound",
+                            {"name": name, "from": existing, "to": account})
+        target["account"] = account
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_bytes(json.dumps(data, indent=2, ensure_ascii=False).encode())
+        os.replace(tmp, path)
+        self.load()
+        self.audit_note("integration_bound", {"name": name, "account": account,
+                                              "was": existing or None})
+        return {"ok": True, "name": name, "account": account,
+                "rebound": bool(existing and existing != account),
+                "note": "the integration now refuses a call that names any other account"}
+
+    def account_problem(self, name: str, params: Dict[str, Any]) -> str:
+        """Why this call would break the single-account binding, or ''.
+
+        Called on every call, before the network. Two cases are refused:
+        a call that NAMES an account other than the bound one, and a call on an
+        account integration that was never bound. Both are refusals rather than
+        warnings, because a warning here means the call still happened.
+        """
+        integ = self.integrations.get(name)
+        if integ is None or not _is_account_integration(integ):
+            return ""
+        named = ""
+        for key in ("account", "email", "user", "userId", "from", "sender"):
+            if params.get(key):
+                named = str(params[key]).strip()
+                break
+        bound = integ.account.strip()
+        if named:
+            if not bound:
+                return (f"'{name}' is not bound to an account yet, so a call naming "
+                        f"'{named}' cannot be checked against one. Bind it first: "
+                        f"`brain integrations bind {name} {named}`.")
+            if not _same_account(named, bound):
+                return (f"'{name}' is bound to {bound}; this call names {named}. One "
+                        f"integration speaks for one account (mandate 3), so it is "
+                        f"refused rather than allowed to reach a second account.")
+        elif not bound:
+            return (f"'{name}' is an account integration with no account bound. Bind it "
+                    f"with `brain integrations bind {name} you@gmail.com` so the call "
+                    f"can prove which account it speaks for.")
+        return ""
+
+    def audit_note(self, event: str, detail: Dict[str, Any]) -> None:
+        """Best-effort audit line; the vault may not be unlocked here."""
+        if self.memory is None:
+            return
+        try:
+            store = getattr(self.memory, "config", None)
+            from ..memory.vault import Vault
+
+            Vault(store).audit(event, detail) if store is not None else None
+        except Exception:                       # pragma: no cover
+            pass
 
     # ------------------------------------------------------------------ #
     def resolve_secret(self, spec: Dict[str, Any]) -> str:
@@ -279,6 +424,17 @@ class IntegrationGateway:
         for req in op.required:
             if req not in params or params[req] in (None, ""):
                 raise IntegrationError(f"missing required parameter '{req}' for {name}.{operation}")
+
+        # Mandate 3, single-account binding: refuse BEFORE the network, so a call
+        # for a second account never leaves the machine and never gets a 200 that
+        # looks like progress.
+        problem = self.account_problem(name, params)
+        if problem:
+            if ctx is not None and getattr(ctx, "audit", None):
+                ctx.audit("integration_account_refused",
+                          {"name": name, "operation": operation,
+                           "params": sorted(params), "why": problem[:200]})
+            raise PolicyViolation(problem)
 
         # template the path/query/body from the *declared* operation spec only
         path = self._render(integ, op.path, params)

@@ -384,9 +384,11 @@ class Gateway:
 
         if path == "/v1/auth/challenge" and method == "POST":
             try:
-                ch = self.ceremony.issue_challenge(style=str(body.get("style", "digits")))
+                ch = self.ceremony.issue_challenge(style=str(body.get("style", "auto")))
             except CeremonyError as exc:
                 raise ApiError(409, str(exc)) from exc
+            except ValueError as exc:
+                raise ApiError(400, str(exc)) from exc
             return 200, ch
 
         if path == "/v1/auth/verify" and method == "POST":
