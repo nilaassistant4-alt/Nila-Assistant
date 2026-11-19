@@ -129,7 +129,7 @@ def test_running_a_cut_without_ffmpeg_says_how_to_get_it(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 # getting ffmpeg, without an installer or an admin prompt
 # --------------------------------------------------------------------------- #
-def test_the_downloader_finds_what_is_here_first_and_downloads_nothing(tmp_path):
+def test_the_downloader_finds_what_is_here_first_and_downloads_nothing(tmp_path, monkeypatch):
     fake = tmp_path / "ffmpeg.exe"
     fake.write_bytes(b"MZ fake")
     called = {"download": False}
@@ -139,19 +139,15 @@ def test_the_downloader_finds_what_is_here_first_and_downloads_nothing(tmp_path)
         raise AssertionError("it must not download when ffmpeg is already here")
 
     import brain.agent.video_edit as ve
-    monkey = pytest.MonkeyPatch()
-    monkey.setattr(getffmpeg, "_download", never)
-    monkey.setattr(getffmpeg, "prove", lambda path: {"ok": bool(path), "path": path,
-                                                     "version": "ffmpeg version test"})
-    monkey.setattr(getffmpeg, "find_binary", lambda name="ffmpeg": str(fake))
-    try:
-        out = getffmpeg.install(dest=tmp_path)
-    finally:
-        monkey.undo()
+    monkeypatch.setattr(getffmpeg, "_download", never)
+    monkeypatch.setattr(getffmpeg, "prove", lambda path: {"ok": bool(path), "path": path,
+                                                          "version": "ffmpeg version test"})
+    monkeypatch.setattr(getffmpeg, "find_binary", lambda name="ffmpeg": str(fake))
+    out = getffmpeg.install(dest=tmp_path)
     assert out["installed"] is False and called["download"] is False
 
 
-def test_only_the_two_programs_are_unpacked_and_nothing_else(tmp_path):
+def test_only_the_two_programs_are_unpacked_and_nothing_else(tmp_path, monkeypatch):
     import io
     import zipfile
 
@@ -161,14 +157,10 @@ def test_only_the_two_programs_are_unpacked_and_nothing_else(tmp_path):
         archive.writestr("ffmpeg-build/bin/ffprobe.exe", b"MZ ffprobe")
         archive.writestr("ffmpeg-build/README.txt", "not ours to install")
         archive.writestr("ffmpeg-build/bin/evil.dll", b"MZ")
-    monkey = pytest.MonkeyPatch()
-    monkey.setattr(getffmpeg, "prove", lambda path: {"ok": True, "path": path,
-                                                     "version": "ffmpeg version test"})
-    monkey.setattr(getffmpeg, "find_binary", lambda name="ffmpeg": "")
-    try:
-        out = getffmpeg.install(data=buffer.getvalue(), dest=tmp_path / "tools")
-    finally:
-        monkey.undo()
+    monkeypatch.setattr(getffmpeg, "prove", lambda path: {"ok": True, "path": path,
+                                                         "version": "ffmpeg version test"})
+    monkeypatch.setattr(getffmpeg, "find_binary", lambda name="ffmpeg": "")
+    out = getffmpeg.install(data=buffer.getvalue(), dest=tmp_path / "tools")
     written = sorted(p.name for p in (tmp_path / "tools").iterdir())
     assert written == ["ffmpeg.exe", "ffprobe.exe"]
 
@@ -188,14 +180,10 @@ def test_a_real_download_is_not_skipped_because_a_copy_is_already_here(tmp_path,
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr("bin/ffmpeg.exe", b"MZ ffmpeg")
-    monkey = pytest.MonkeyPatch()
-    monkey.setattr(getffmpeg, "find_binary", lambda name="ffmpeg": str(exist))
-    monkey.setattr(getffmpeg, "prove", lambda path: {"ok": True, "path": path,
-                                                     "version": "ffmpeg version test"})
-    try:
-        out = getffmpeg.install(data=buffer.getvalue(), dest=tmp_path / "tools")
-    finally:
-        monkey.undo()
+    monkeypatch.setattr(getffmpeg, "find_binary", lambda name="ffmpeg": str(exist))
+    monkeypatch.setattr(getffmpeg, "prove", lambda path: {"ok": True, "path": path,
+                                                          "version": "ffmpeg version test"})
+    out = getffmpeg.install(data=buffer.getvalue(), dest=tmp_path / "tools")
     assert out["installed"] is True
     assert (tmp_path / "tools" / "ffmpeg.exe").is_file()
 

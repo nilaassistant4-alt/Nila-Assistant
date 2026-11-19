@@ -224,3 +224,51 @@ def test_credential_free_calls_still_follow_redirects(recordings):
     with open_follow(req, timeout=3) as resp:
         assert resp.status == 200
     assert [p for p, _, _ in seen] == ["/start/plain", "/landing"]
+
+
+# --------------------------------------------------------------------------- #
+# the same rule for a credential-FREE fetch: no secret to steal, but no reason to
+# let weather/Wikipedia/YouTube/RSS bounce Nila to a private or local address.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1:8790/v1/blobs",
+    "http://localhost:8790/",
+    "http://169.254.169.254/latest/meta-data/",       # cloud metadata
+    "http://10.0.0.5/admin",
+    "http://192.168.1.1/",
+    "http://[::1]:8791/",
+    "file:///etc/passwd",
+    "ftp://example.com/x",
+    "https://intranet",                                # a single-label LAN name
+])
+def test_a_public_fetch_may_not_be_aimed_at_a_private_address(url):
+    from brain.util.http import is_public_url
+
+    assert is_public_url(url) is False, url
+
+
+@pytest.mark.parametrize("url", [
+    "https://api.open-meteo.com/v1/forecast",
+    "https://ta.wikipedia.org/api/rest_v1/page/summary/X",
+    "https://www.youtube.com/watch?v=abc",
+    "http://example.com/feed.xml",
+])
+def test_ordinary_public_fetches_are_allowed(url):
+    from brain.util.http import is_public_url
+
+    assert is_public_url(url) is True, url
+
+
+def test_a_redirect_to_a_private_address_is_refused_before_any_second_request():
+    """The destination is checked, not merely the declared URL: a public host that
+    302s to 127.0.0.1 must not make Nila call a local service."""
+    from brain.util.http import RedirectRefused, _PublicRedirects
+    import urllib.request
+
+    handler = _PublicRedirects()
+    req = urllib.request.Request("https://example.com/start")
+    with pytest.raises(RedirectRefused) as exc:
+        handler.redirect_request(req, None, 302, "Found",
+                                 {"Location": "http://127.0.0.1:8790/v1/blobs"},
+                                 "http://127.0.0.1:8790/v1/blobs")
+    assert "127.0.0.1" in str(exc.value)

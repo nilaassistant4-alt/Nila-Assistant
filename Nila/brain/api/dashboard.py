@@ -160,7 +160,16 @@ def _linux() -> Dict[str, Any]:
 
 def metrics() -> Dict[str, Any]:
     """psutil if installed; otherwise stdlib (Linux/Windows). macOS without psutil gets
-    disk and load only."""
+    disk and load only.
+
+    Every part of this is best-effort, because it is the ONE route the dashboard polls
+    all day and a raise here is a blank strip on the owner's screen. It used to catch
+    only ``ImportError``, so a machine with **no battery** - a desktop, a VM, WSL, and
+    therefore the owner's own Windows 11 PC - got an HTTP 500 from
+    ``psutil.sensors_battery()`` raising ``NotImplementedError`` before the stdlib
+    fallback could run. The rule now: a metric that cannot be read is left out, and the
+    ones that can be read are still returned.
+    """
     m: Dict[str, Any] = {"platform": platform.system()}
     try:
         m["load1"], m["cpus"] = round(os.getloadavg()[0], 2), os.cpu_count()
@@ -168,13 +177,29 @@ def metrics() -> Dict[str, Any]:
         m["cpus"] = os.cpu_count()
     try:
         import psutil
-        m["cpu_pct"], m["mem_pct"] = psutil.cpu_percent(), psutil.virtual_memory().percent
-        b = psutil.sensors_battery()
-        if b:
-            m.update(battery_pct=round(b.percent), plugged=b.power_plugged)
     except ImportError:
         sysname = platform.system()
-        m.update(_win() if sysname == "Windows" else _linux() if sysname == "Linux" else {})
+        try:
+            m.update(_win() if sysname == "Windows" else _linux() if sysname == "Linux" else {})
+        except Exception:                      # a metric later, never a 500
+            pass
+    else:
+        try:
+            m["cpu_pct"], m["mem_pct"] = psutil.cpu_percent(), psutil.virtual_memory().percent
+        except Exception:
+            pass
+        try:
+            b = psutil.sensors_battery()
+            if b:
+                m.update(battery_pct=round(b.percent), plugged=b.power_plugged)
+            else:
+                # None means "this machine has no battery", which is an answer, not a
+                # failure - say so instead of leaving the panel guessing.
+                m["battery"] = "none"
+        except Exception as exc:
+            # NotImplementedError is the documented one; OSError/AttributeError turn up
+            # on VMs and containers too. Battery is never worth a failed request.
+            m["battery"] = f"unavailable ({type(exc).__name__})"
     try:
         du = shutil.disk_usage(Path.home())
         m["disk_pct"] = round(100 * du.used / du.total, 1)

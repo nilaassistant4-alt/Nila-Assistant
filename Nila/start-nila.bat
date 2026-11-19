@@ -27,8 +27,10 @@ if errorlevel 1 (
 echo Close this window ^(or press Ctrl+C^) to stop Nila and lock the vault.
 echo.
 if /i "%~1"=="recovery" (
+  rem The code is typed here and PIPED in, never put on the command line: an
+  rem argument is visible to Task Manager, ps and any log that records argv.
   set /p RC=Type ONE recovery code: 
-  "%NILA_PY%" brain.py dashboard --recovery %RC%
+  echo %RC%| "%NILA_PY%" brain.py dashboard --recovery-stdin
 ) else (
   "%NILA_PY%" brain.py dashboard
 )

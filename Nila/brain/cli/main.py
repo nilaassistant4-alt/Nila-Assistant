@@ -120,6 +120,13 @@ def read_totp(args, prompt: str = "authenticator code (6 digits): ") -> str:
 _SAVED_KEY_WARNING: List[str] = []
 
 
+_RECOVERY_WARNING: List[str] = []
+
+
+def take_recovery_warning() -> str:
+    return _RECOVERY_WARNING.pop() if _RECOVERY_WARNING else ""
+
+
 def _saved_key_problem(message: str, fix: str) -> None:
     _SAVED_KEY_WARNING[:] = [f"{message} (fix: {fix})"]
 
@@ -228,6 +235,34 @@ def open_vault(args, require_unlocked: bool = True, mode: str = "passphrase",
                     _finish_open(config, vault, session.mk, args, mode="device-key",
                                  require_second_factor=False)
                     return config, vault
+        if getattr(args, "recovery_stdin", False) and not getattr(args, "recovery", None):
+            # BUG-3: `start-nila.bat recovery` passed the code as an argument, so it
+            # sat in the process command line (Task Manager, ps, an audit log) for the
+            # life of the dashboard. One line on stdin removes it from anyone's view.
+            import sys as _sys
+
+            args.recovery = (_sys.stdin.readline() or "").strip() or None
+        # ---- the break-glass path, and it has to be the FIRST one ------------- #
+        # The old flow asked for the passphrase before it ever looked at the recovery
+        # code, so the person the codes are printed for - the one who forgot the
+        # passphrase - could not use them: the prompt came first, and the code could
+        # only ever stand in for the authenticator. A code now unwraps the master key
+        # by itself (see `Vault.unlock_with_recovery_code`), so when one is supplied it
+        # is tried before the passphrase is asked for at all.
+        if getattr(args, "recovery", None):
+            try:
+                session = vault.unlock_with_recovery_code(str(args.recovery))
+            except PermissionError as exc:
+                w = vault.register_failure("bad-recovery-code")
+                raise SystemExit(str(exc) + (f" (locked out {w}s)" if w else "")) from exc
+            _finish_open(config, vault, session.mk, args, mode="recovery",
+                         require_second_factor=False)
+            _remember_after_passphrase(config, vault, session.mk, args)
+            _RECOVERY_WARNING.append(
+                "opened with a recovery code: that code is now spent, and the "
+                "authenticator should be set up again (`brain totp`). Run "
+                "`brain passphrase set` now to choose a passphrase you will remember.")
+            return config, vault
         passphrase = read_passphrase(args)
         try:
             mk = vault.unlock(passphrase)
@@ -239,24 +274,10 @@ def open_vault(args, require_unlocked: bool = True, mode: str = "passphrase",
         secret = vault.load_totp_secret()
         has_voice = vault.has_voice()
         override = bool(policy.get("allow_degraded"))
-        if secret and getattr(args, "recovery", None):
-            # break-glass: a one-time recovery code instead of the authenticator
-            if not vault.consume_recovery_code(str(args.recovery).strip()):
-                w = vault.register_failure("bad-recovery-code")
-                vault.discard_provisional()
-                raise SystemExit("invalid recovery code" + (f" (locked out {w}s)" if w else ""))
-            vault.meta_set("re_enrollment_required", True)
-            session_mode = "recovery"
-            degraded = True
-            vault.register_success()
-            vault.start_session(mk, mode=session_mode, degraded=degraded)
-            vault.audit("session_unlock", {"mode": session_mode, "degraded": degraded,
-                                           "via": "cli"})
-            _remember_after_passphrase(config, vault, mk, args)
-        else:
-            _finish_open(config, vault, mk, args, mode=mode,
-                         require_second_factor=True, allow_setup=allow_setup)
-            _remember_after_passphrase(config, vault, mk, args)
+        # A recovery code was already handled above, before the passphrase prompt.
+        _finish_open(config, vault, mk, args, mode=mode,
+                     require_second_factor=True, allow_setup=allow_setup)
+        _remember_after_passphrase(config, vault, mk, args)
     return config, vault
 
 
@@ -4037,7 +4058,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--totp", default=None, metavar="CODE",
                    help="authenticator code (otherwise you are prompted)")
     p.add_argument("--recovery", default=None, metavar="CODE",
-                   help="one-time recovery code, used instead of the authenticator")
+                   help="one-time recovery code, used instead of the authenticator "
+                        "(prefer --recovery-stdin: an argument is visible to other "
+                        "processes and lands in shell history)")
+    p.add_argument("--recovery-stdin", action="store_true",
+                   help="read the one-time recovery code from stdin instead of argv")
     p.add_argument("--no-saved-key", action="store_true",
                    help="do not use (or save) the device key this laptop remembered; "
                         "type the passphrase instead")
@@ -4054,21 +4079,44 @@ def build_parser() -> argparse.ArgumentParser:
         if "--json" not in existing:
             made.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
                               help="machine-readable output")
-        made.add_argument("--no-saved-key", action="store_true", default=argparse.SUPPRESS,
-                          help=argparse.SUPPRESS)
+        # `--no-saved-key` and every ceremony flag exist in BOTH positions: a flag
+        # that only works before the subcommand is a trap, and `--recovery-stdin`
+        # has to work where the .bat puts it or the .bat fails with "unrecognized
+        # arguments". Checked, not assumed: `add_auth` re-adds some of these strings
+        # for the commands that need a passphrase, and argparse raises a conflict.
+        for flag in ("--no-saved-key", "--recovery-stdin", "--recovery",
+                     "--passphrase-env", "--passphrase-stdin", "--totp",
+                     "--passphrase"):
+            if flag in existing:
+                continue
+            if flag.endswith("-stdin") or flag == "--no-saved-key":
+                made.add_argument(flag, action="store_true",
+                                  default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+            else:
+                made.add_argument(flag, default=argparse.SUPPRESS,
+                                  metavar="CODE" if flag in ("--recovery", "--totp") else "VAR",
+                                  help=argparse.SUPPRESS)
         return made
 
     sub.add_parser = _add_parser            # type: ignore[method-assign]
 
     def add_auth(sp):
-        sp.add_argument("--passphrase", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
-        sp.add_argument("--passphrase-env", default=argparse.SUPPRESS, metavar="VAR")
-        sp.add_argument("--passphrase-stdin", action="store_true", default=argparse.SUPPRESS)
+        have = {o for a in sp._actions for o in a.option_strings}
+        if "--passphrase" not in have:
+            sp.add_argument("--passphrase", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        if "--passphrase-env" not in have:
+            sp.add_argument("--passphrase-env", default=argparse.SUPPRESS, metavar="VAR")
+        if "--passphrase-stdin" not in have:
+            sp.add_argument("--passphrase-stdin", action="store_true",
+                            default=argparse.SUPPRESS)
         existing = {o for a in sp._actions for o in a.option_strings}   # `unlock` has its own
         if "--totp" not in existing:
             sp.add_argument("--totp", default=argparse.SUPPRESS, metavar="CODE")
         if "--recovery" not in existing:
             sp.add_argument("--recovery", default=argparse.SUPPRESS, metavar="CODE")
+        if "--recovery-stdin" not in existing:
+            sp.add_argument("--recovery-stdin", action="store_true",
+                            default=argparse.SUPPRESS)
 
     sp = sub.add_parser("init", help="create the vault, the authenticator and the codes")
     sp.add_argument("--user", default="owner")
@@ -4092,8 +4140,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--bound", help="challenge binding HMAC")
     sp.add_argument("--record", action="store_true", help="record from the microphone")
     sp.add_argument("--seconds", type=float, default=4.0)
-    sp.add_argument("--totp", help="6-digit TOTP code (degraded session)")
-    sp.add_argument("--recovery", help="recovery code (break-glass)")
+    # Both are already on the parser (the shared wrapper adds every ceremony flag
+    # in either position), so these two lines must not add them a second time.
+    have = {o for a in sp._actions for o in a.option_strings}
+    if "--totp" not in have:
+        sp.add_argument("--totp", help="6-digit TOTP code (degraded session)")
+    if "--recovery" not in have:
+        sp.add_argument("--recovery", help="recovery code (break-glass)")
     sp.add_argument("--chat", action="store_true", help="stay in the REPL after unlocking")
     sp.add_argument("--step-up", action="store_true",
                     help="mark this session as re-authenticated, authorising ONE "
@@ -4685,7 +4738,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     ui = UI(quiet=getattr(args, "quiet", False), json_out=getattr(args, "json", False))
     try:
-        return int(args.func(args, ui) or 0)
+        rc = int(args.func(args, ui) or 0)
+        # Anything `open_vault` decided the owner must know about - a saved key that no
+        # longer matches, or a recovery code just spent - is printed once, here, so a
+        # warning cannot be silently collected and never shown.
+        for note in (take_saved_key_warning(), take_recovery_warning()):
+            if note:
+                ui.warn(note)
+        return rc
     except KeyboardInterrupt:
         print()
         return 130

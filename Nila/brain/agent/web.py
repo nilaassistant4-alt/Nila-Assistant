@@ -23,6 +23,8 @@ import xml.etree.ElementTree as ET
 from html import unescape
 from typing import Any, Dict, List, Optional
 
+from ..util import http as _http
+
 #: The free pack. `needs` says what the owner must add, if anything.
 PACK: Dict[str, Dict[str, Any]] = {
     "weather": {
@@ -87,7 +89,7 @@ def geocode(name: str, timeout: float = 10.0) -> Dict[str, Any]:
     url = ("https://geocoding-api.open-meteo.com/v1/search?name="
            + urllib.parse.quote(q) + "&count=1&language=ta&format=json")
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with _http.open_public(url, timeout=timeout) as resp:
             data = json.loads(resp.read() or b"{}")
     except (OSError, ValueError) as exc:
         raise ConnectorError(f"could not look up '{q}': {exc}") from exc
@@ -133,7 +135,7 @@ def weather(place: str, days: int = 3, tamil: bool = False,
            "precipitation_probability_max&forecast_days={days}&timezone=auto").format(
         lat=where["latitude"], lon=where["longitude"], days=days)
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with _http.open_public(url, timeout=timeout) as resp:
             data = json.loads(resp.read() or b"{}")
     except (OSError, ValueError) as exc:
         raise ConnectorError(f"the weather service did not answer: {exc}") from exc
@@ -171,7 +173,7 @@ def wikipedia(topic: str, lang: str = "en", sentences: int = 3,
     url = (f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/"
            + urllib.parse.quote(q.replace(" ", "_")))
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with _http.open_public(url, timeout=timeout) as resp:
             data = json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
@@ -210,7 +212,7 @@ def youtube_search(query: str, api_key: str, limit: int = 3,
            "&maxResults={n}&q={q}&key={k}").format(
         n=limit, q=urllib.parse.quote(q), k=urllib.parse.quote(api_key))
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        with _http.open_public(url, timeout=timeout) as resp:
             data = json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -317,7 +319,7 @@ def youtube_transcript(url_or_id: str, timeout: float = 15.0) -> Dict[str, Any]:
                "Accept-Language": "en-US,en;q=0.9,ta;q=0.8"}
     try:
         req = urllib.request.Request(page_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _http.open_public(req, timeout=timeout) as resp:
             html = resp.read(3_000_000).decode("utf-8", "replace")
     except (OSError, ValueError) as exc:
         raise ConnectorError(f"could not open the video page: {exc}") from exc
@@ -336,7 +338,7 @@ def youtube_transcript(url_or_id: str, timeout: float = 15.0) -> Dict[str, Any]:
     caption_url = track["url"] + ("&fmt=json3" if "fmt=" in track["url"] else "")
     try:
         req = urllib.request.Request(track["url"], headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _http.open_public(req, timeout=timeout) as resp:
             body = resp.read(4_000_000).decode("utf-8", "replace")
     except (OSError, ValueError) as exc:
         raise ConnectorError(f"the caption track could not be fetched: {exc}") from exc
@@ -344,7 +346,7 @@ def youtube_transcript(url_or_id: str, timeout: float = 15.0) -> Dict[str, Any]:
     if not text and "json3" not in caption_url:
         try:                                     # try the JSON shape after XML
             req = urllib.request.Request(caption_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _http.open_public(req, timeout=timeout) as resp:
                 data = json.loads(resp.read(4_000_000) or b"{}")
             events = data.get("events") or []
             text = " ".join("".join(seg.get("utf8", "") for seg in ev.get("segs") or [])
@@ -372,7 +374,7 @@ def rss(feed_url: str, limit: int = 5, timeout: float = 12.0) -> Dict[str, Any]:
     limit = max(1, min(20, int(limit or 5)))
     try:
         req = urllib.request.Request(src, headers={"User-Agent": "nila-rss/0.2"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _http.open_public(req, timeout=timeout) as resp:
             raw = resp.read(3_000_000)
     except (OSError, ValueError) as exc:
         raise ConnectorError(f"the feed did not answer: {exc}") from exc

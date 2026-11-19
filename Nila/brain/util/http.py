@@ -51,8 +51,48 @@ class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
         raise RedirectRefused(req.full_url, code, newurl)
 
 
+def is_public_url(url: str) -> bool:
+    """True when ``url`` is https (or plain http, for local tools) and NOT private.
+
+    This is the answer to a second, quieter version of the same problem: the
+    credential-free fetchers (weather, Wikipedia, a YouTube caption track, an RSS
+    feed the owner typed) followed redirects anywhere, so any of those hosts could
+    bounce Nila to ``http://127.0.0.1:8790`` and make her talk to a local service
+    with no token. A public fetch now stays public.
+    """
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").strip().rstrip(".").lower()
+    if not host:
+        return False
+    if host in ("localhost", "localhost.localdomain") or host.endswith(".localhost"):
+        return False
+    # A hostname with no dot cannot be a public site (it is a LAN/NetBIOS name).
+    if "." not in host and ":" not in host:
+        return False
+    try:
+        import ipaddress
+
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return True                       # an ordinary DNS name
+    return not (addr.is_private or addr.is_loopback or addr.is_link_local
+                or addr.is_reserved or addr.is_multicast or addr.is_unspecified)
+
+
+class _PublicRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to another public address; refuse the rest."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+        if not is_public_url(newurl):
+            raise RedirectRefused(req.full_url, code, newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 _STRICT = urllib.request.build_opener(_RefuseRedirects)
 _DEFAULT = urllib.request.build_opener()
+_PUBLIC = urllib.request.build_opener(_PublicRedirects)
 
 
 def open_once(req: urllib.request.Request, timeout: float,
@@ -78,4 +118,26 @@ def open_follow(req: urllib.request.Request, timeout: float,
     return _DEFAULT.open(req, timeout=timeout)
 
 
-__all__ = ["RedirectRefused", "open_once", "open_follow"]
+def open_public(req, timeout: float, context: Optional[Any] = None):
+    """Open a credential-FREE public fetch; redirects allowed, but only to public hosts.
+
+    ``req`` may be a URL string or a ``urllib.request.Request``. Use this for the
+    free web pack (weather, Wikipedia, YouTube captions, an RSS feed) and never for
+    anything that carries a token - those go through :func:`open_once`.
+    """
+    if isinstance(req, str):
+        if not is_public_url(req):
+            raise RedirectRefused(req, 0, req)
+        req = urllib.request.Request(req)
+    else:
+        if not is_public_url(getattr(req, "full_url", "")):
+            raise RedirectRefused(getattr(req, "full_url", ""), 0,
+                                  getattr(req, "full_url", ""))
+    if context is not None:
+        opener = urllib.request.build_opener(
+            _PublicRedirects, urllib.request.HTTPSHandler(context=context))
+        return opener.open(req, timeout=timeout)
+    return _PUBLIC.open(req, timeout=timeout)
+
+
+__all__ = ["RedirectRefused", "is_public_url", "open_once", "open_follow", "open_public"]

@@ -19,6 +19,7 @@ takes unrecognised arguments is reported as SKIPPED with a reason, never as a pa
 from __future__ import annotations
 
 import builtins
+import importlib
 import importlib.util
 import inspect
 import pathlib
@@ -115,7 +116,23 @@ class Param:
 
     def skipif(self, condition, reason="", **kwargs):
         def wrap(fn):
-            if condition:
+            # The condition may be a plain bool, a string that pytest would evaluate,
+            # or a callable. BUG-4 was the second case: the shim skipped only when the
+            # expression was already True at import time, so `skipif(ZIP is None, ...)`
+            # with ZIP bound later ran the test and reported a false failure.
+            if isinstance(condition, str):
+                try:
+                    module = sys.modules.get(getattr(fn, "__module__", ""), None)
+                    scope = dict(getattr(module, "__dict__", {}))
+                    scope.setdefault("ZIP", None)
+                    decided = bool(eval(condition, scope, {}))   # noqa: S307 - shim
+                except Exception:
+                    # Cannot decide -> do not claim it passes and do not fail it: run
+                    # it and let it decide, which is what the old shim did by accident.
+                    decided = False
+            else:
+                decided = bool(condition)
+            if decided:
                 fn._nila_skip = reason or "skipif condition true"
             return fn
         return wrap
@@ -142,6 +159,115 @@ class Param:
                 return args[0]
             return lambda fn: fn
         return deco
+
+
+class _MonkeyPatch:
+    """The four operations the suite uses, so `monkeypatch` fixtures still run.
+
+    Not a reimplementation of pytest: only `setattr` / `setitem` / `delattr` /
+    `delenv` / `setenv` exist, each recorded and undone when the test ends.
+    """
+
+    def __init__(self, cleanups: list):
+        self._undo: list = []
+        cleanups.append(("monkeypatch", self._restore()))
+
+    def _restore(self):
+        # The runner walks cleanups with next(gen, None): the FIRST next starts the
+        # generator (nothing to do yet), the second one runs the undo. A bare `yield`
+        # here meant the undo never ran and the patched function stayed in place for
+        # every later test in the module - 7 false failures in test_session_expiry.
+        yield
+        self.undo()
+
+    def setattr(self, target, name, value=None, raising: bool = True):
+        if isinstance(target, str) and value is None:
+            # `monkeypatch.setattr("module.attr", value)` string form. pytest imports
+            # the LONGEST importable prefix and then walks attribute by attribute,
+            # which is what lets "brain.memory.vault.time.monotonic" work: `time` is a
+            # module imported by vault, not a submodule of it. rpartition alone failed
+            # with "No module named 'brain.memory.vault.time'".
+            parts = target.split(".")
+            for cut in range(len(parts) - 1, 0, -1):
+                try:
+                    obj = importlib.import_module(".".join(parts[:cut]))
+                except ImportError:
+                    continue
+                for attr_name in parts[cut:-1]:
+                    obj = getattr(obj, attr_name)
+                target, attr = obj, parts[-1]
+                break
+            else:
+                raise AttributeError(f"could not resolve {target!r}")
+            name, value = attr, name
+        old = getattr(target, name, _MISSING)
+        setattr(target, name, value)
+        self._undo.append(lambda: (setattr(target, name, old) if old is not _MISSING
+                                   else delattr(target, name)))
+
+    def setitem(self, mapping, key, value):
+        old = mapping.get(key, _MISSING)
+        mapping[key] = value
+        self._undo.append(lambda: (mapping.__setitem__(key, old) if old is not _MISSING
+                                   else mapping.pop(key, None)))
+
+    def delattr(self, target, name, raising: bool = True):
+        old = getattr(target, name)
+        delattr(target, name)
+        self._undo.append(lambda: setattr(target, name, old))
+
+    def setenv(self, name, value, prepend=None):
+        import os
+
+        old = os.environ.get(name, _MISSING)
+        os.environ[name] = str(value)
+        self._undo.append(lambda: (os.environ.__setitem__(name, old) if old is not _MISSING
+                                   else os.environ.pop(name, None)))
+
+    def delenv(self, name, raising: bool = True):
+        import os
+
+        # `raising=False` is the common form: the variable may simply not be set.
+        # Pop unconditionally and remember whether it existed, or a machine WITH a
+        # GEMINI_API_KEY in its environment fails tests that only wanted it absent.
+        old = os.environ.pop(name, _MISSING)
+        if old is not _MISSING:
+            self._undo.append(lambda: os.environ.__setitem__(name, old))
+
+    def undo(self):
+        for fn in reversed(self._undo):
+            try:
+                fn()
+            except Exception:
+                pass
+        self._undo.clear()
+
+
+_MISSING = object()
+
+
+class _CapSys:
+    """Capture what the test writes, so `capsys.readouterr()` works without pytest."""
+
+    def __init__(self, cleanups: list):
+        import io
+
+        self._out, self._err = io.StringIO(), io.StringIO()
+        self._saved = (sys.stdout, sys.stderr)
+        sys.stdout, sys.stderr = self._out, self._err
+        cleanups.append(("capsys", self._restore()))
+
+    def _restore(self):
+        yield
+        sys.stdout, sys.stderr = self._saved
+
+    def readouterr(self):
+        import types
+
+        out, err = self._out.getvalue(), self._err.getvalue()
+        self._out.seek(0), self._out.truncate(0)
+        self._err.seek(0), self._err.truncate(0)
+        return types.SimpleNamespace(out=out, err=err)
 
 
 class FixtureError(Exception):
@@ -174,6 +300,14 @@ def resolve_fixtures(names, conftest, tmp_path, cleanups, module=None):
             val = tmp_path
         elif name == "tmp_path_factory":
             val = _tmp_factory()
+        elif name == "monkeypatch":
+            # BUG-4's second half: 129 tests take `monkeypatch`, and a fallback runner
+            # that cannot build it reports them as "not built" - honest, but it means
+            # the runner proves less every year. This is the four methods the suite
+            # actually uses, undone in reverse after the test.
+            val = _MonkeyPatch(cleanups)
+        elif name == "capsys":
+            val = _CapSys(cleanups)
         else:
             # module-local fixtures live in the test file itself
             fn = getattr(conftest, name, None)
@@ -197,6 +331,10 @@ def resolve_fixtures(names, conftest, tmp_path, cleanups, module=None):
 
 def main(argv: list[str]) -> int:
     sys.path.insert(0, str(ROOT))
+    # `tests/` on the path too: some modules do `from conftest import PASSPHRASE`, which
+    # pytest allows because it puts the test file's own directory on sys.path. Without
+    # this the fallback reported a false "IMPORT ERROR" for a module that is fine.
+    sys.path.insert(0, str(TESTS))
     wanted = argv[1] if len(argv) > 1 else None
 
     # provide a `pytest` shim only if the real one is absent
@@ -205,6 +343,23 @@ def main(argv: list[str]) -> int:
         have_pytest = True
     except ImportError:
         have_pytest = False
+    if have_pytest and "--shim" not in argv:
+        # BUG-4. This file exists for machines WITHOUT pytest (the owner's laptop may
+        # not have it). When pytest IS installed, imitating it is how a runner reports
+        # "2 failed" for tests that pass: `monkeypatch` string targets, `capsys`, and
+        # `skipif` evaluated at a different moment all behave slightly differently.
+        # So hand over to the real thing and say so, instead of guessing at it. The
+        # shim is still testable and still used where it belongs: `--shim`.
+        import subprocess
+
+        cmd = [sys.executable, "-m", "pytest", "tests/", "-q"]
+        if wanted:
+            cmd = [sys.executable, "-m", "pytest", "-q", "-k", wanted]
+        print("real pytest is installed, so it runs the suite (this fallback is for "
+              "machines without it; force the shim with --shim)")
+        return subprocess.call(cmd)
+
+    if not have_pytest:
         shim = type(sys)("pytest")
         shim.mark = Param()
         # @pytest.fixture may be used bare or called: both must pass the fn through
@@ -224,6 +379,60 @@ def main(argv: list[str]) -> int:
     if not files:
         print(f"no test modules matched {wanted!r}")
         return 2
+
+    if "--one" not in argv:
+        # BUG-4's last layer. Running every module in ONE process meant a module's
+        # leaked global (a patched clock, a cached config, a migrated vector store)
+        # decided whether the NEXT module passed: `test_instruction_memory_acceptance`
+        # reported 28 failures in the full run and 28 passes on its own. pytest gets
+        # isolation from its fixture teardown and from collecting fresh; the fallback
+        # gets it the blunt, reliable way - one process per module - and adds up the
+        # results. The owner's laptop pays a second or so per file for a runner that
+        # cannot lie about a pass.
+        import re
+
+        import subprocess
+
+        total_pass = total_fail = total_skip = 0
+        failing: list = []
+        skip_reasons_all: dict = {}
+        for path in files:
+            proc = subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve()),
+                                   path.stem, "--one"],
+                                  capture_output=True, text=True, cwd=str(ROOT))
+            out = proc.stdout or ""
+            m = re.search(r"^RESULT pass=(\d+) fail=(\d+) skip=(\d+)$", out, re.M)
+            if not m:
+                total_fail += 1
+                failing.append((path.stem, "<module>",
+                                (proc.stdout + proc.stderr)[-2000:]))
+                print(f"{path.stem:34s} FAIL  (module did not report)")
+                continue
+            p_, f_, s_ = (int(x) for x in m.groups())
+            total_pass += p_
+            total_fail += f_
+            total_skip += s_
+            flag = "FAIL" if f_ else "ok"
+            print(f"{path.stem:34s} {flag:5s} pass={p_:<4d} fail={f_:<3d} skip={s_}")
+            if f_:
+                # The child prints its tracebacks; collect them so a failure can be
+                # read from the parent's output instead of being counted and hidden.
+                for note in re.findall(r"^--- .*?(?=^--- |\Z)", out, re.M | re.S):
+                    failing.append((path.stem, "", note))
+                if not re.search(r"^--- ", out, re.M):
+                    failing.append((path.stem, "<no traceback>", out[-3000:]))
+            for line in re.findall(r"^SKIP (.+)$", out, re.M):
+                skip_reasons_all[line] = skip_reasons_all.get(line, 0) + 1
+        print()
+        for mod, label, tb in failing[:12]:
+            print(f"--- {mod}::{label}\n{tb}"[:4000])
+        print(f"total: {total_pass} passed, {total_fail} failed, {total_skip} skipped "
+              f"(with pytest shim, one process per module)")
+        if total_skip:
+            top = ", ".join(f"{k} ({v})" for k, v in
+                            sorted(skip_reasons_all.items(), key=lambda kv: -kv[1])[:5])
+            print(f"note: {top}")
+        return 1 if total_fail else 0
 
     conftest = None
     cf = TESTS / "conftest.py"
@@ -257,6 +466,12 @@ def main(argv: list[str]) -> int:
             needs = [p for p in sig.parameters
                      if sig.parameters[p].default is inspect.Parameter.empty]
             for label, kwargs in expand(mod, fn):
+                # A test that takes `capsys` replaces sys.stdout; if it raises before
+                # its own setup finishes, the recorder is never registered and real
+                # stdout is lost - the runner then prints nothing and looks like it
+                # hung. Snapshot the streams per test and put them back unconditionally
+                # (BUG-4's second half: 759 skips printed no reason at all).
+                stdout_before, stderr_before = sys.stdout, sys.stderr
                 unresolved = [p for p in needs if p not in kwargs]
                 if unresolved and have_pytest:
                     # Real pytest is installed: it resolves fixtures properly, so
@@ -291,9 +506,20 @@ def main(argv: list[str]) -> int:
                 finally:
                     for _fname, gen in reversed(cleanups):
                         try:
+                            # Two steps: the first `next` starts the generator (a yield
+                            # fixture's setup), the second runs its teardown. Calling it
+                            # once - which is what this did - left every fixture and
+                            # every monkeypatch in place for the next test.
                             next(gen, None)
+                            next(gen, None)
+                        except StopIteration:
+                            pass
                         except Exception:
                             pass
+                    if sys.stdout is not stdout_before:
+                        sys.stdout = stdout_before
+                    if sys.stderr is not stderr_before:
+                        sys.stderr = stderr_before
         passed += mod_pass; failed += mod_fail; skipped += mod_skip
         flag = "FAIL" if mod_fail else "ok"
         print(f"{path.stem:34s} {flag:5s} pass={mod_pass:<4d} fail={mod_fail:<3d} "
@@ -302,6 +528,9 @@ def main(argv: list[str]) -> int:
     print()
     for mod, label, tb in failures[:12]:
         print(f"--- {mod}::{label}\n{tb}")
+    if "--one" in argv:
+        # read by the parent that runs one module per process
+        print(f"RESULT pass={passed} fail={failed} skip={skipped}")
     print(f"total: {passed} passed, {failed} failed, {skipped} skipped "
           f"({'with pytest shim' if not have_pytest else 'real pytest present'})")
     if not have_pytest and skipped:
@@ -309,6 +538,9 @@ def main(argv: list[str]) -> int:
                         sorted(skip_reasons.items(), key=lambda kv: -kv[1])[:5])
         print(f"note: {skipped} test(s) could not be built by the fallback runner"
               f"{': ' + top if top else ''}.")
+        if "--one" in argv:
+            for reason in sorted(skip_reasons, key=lambda k: -skip_reasons[k])[:8]:
+                print(f"SKIP {reason}")
     if have_pytest:
         print("note: real pytest is installed - `python3 -m pytest tests/ -q` runs "
               "the whole suite including fixtures this fallback skips.")

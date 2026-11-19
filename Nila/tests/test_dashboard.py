@@ -129,6 +129,44 @@ def test_metrics_shape(srv):
     assert s == 200 and "disk_pct" in j["metrics"] and "platform" in j["metrics"]
 
 
+@pytest.mark.parametrize("error", [NotImplementedError, OSError, AttributeError, RuntimeError])
+def test_a_machine_with_no_battery_is_a_200_not_a_500(monkeypatch, error):
+    """The owner's own PC has no battery. `psutil.sensors_battery()` then raises, and
+    the old `except ImportError` let that out of `/v1/metrics` as an HTTP 500 - a blank
+    strip on the dashboard of every desktop, VM and WSL install. A metric that cannot
+    be read is left out; the request still succeeds."""
+    import sys
+    import types
+
+    fake = types.ModuleType("psutil")
+    fake.cpu_percent = lambda: 3.0
+    fake.virtual_memory = lambda: types.SimpleNamespace(percent=41.0)
+
+    def no_battery():
+        raise error("no battery on this machine")
+
+    fake.sensors_battery = no_battery
+    monkeypatch.setitem(sys.modules, "psutil", fake)
+    m = dashboard.metrics()
+    assert m["cpu_pct"] == 3.0 and m["mem_pct"] == 41.0
+    assert "battery_pct" not in m
+    assert str(m["battery"]).startswith("unavailable")
+    assert "platform" in m and "disk_pct" in m
+
+
+def test_a_machine_with_no_battery_module_at_all_says_so(monkeypatch):
+    """psutil present but the build has no battery API: same 200, same plain answer."""
+    import sys
+    import types
+
+    fake = types.ModuleType("psutil")
+    fake.cpu_percent = lambda: 1.0
+    fake.virtual_memory = lambda: types.SimpleNamespace(percent=10.0)   # no sensors_battery
+    monkeypatch.setitem(sys.modules, "psutil", fake)
+    m = dashboard.metrics()
+    assert "battery_pct" not in m and "battery" in m
+
+
 def test_files_names_only_allowlist(srv):
     httpd, gw, docs = srv
     s, top = jcall(httpd, "/v1/files")

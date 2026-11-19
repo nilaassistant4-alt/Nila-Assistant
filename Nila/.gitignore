@@ -1,9 +1,42 @@
+# ---- Python ------------------------------------------------------------- #
 __pycache__/
 *.pyc
+*.pyo
 .pytest_cache/
-*.pbx
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+
+# ---- Nila's own data: never committable --------------------------------- #
+# BRAIN_HOME defaults to ~/.personal-brain, but it can be pointed anywhere -
+# including inside this folder - and `workspace/` is written here by default.
+# An external audit found this list missing, which meant a run with BRAIN_HOME
+# set to "./" could commit the owner's memories, journal and permissions.
+.personal-brain/
+vault/
+vault_old/
+workspace/
+memory.db
+memory.db-journal
+memory.db-wal
+audit.log
+audit.log.*
+permissions.json
 usage.json
 identity.json
-*.key
+*.pbx
+*.blob.json
+device-key.dpapi
+
+# ---- secrets ------------------------------------------------------------ #
 .env
 config/api_keys.json
+*.key
+*.pem
+
+# ---- the shared list ---------------------------------------------------- #
+# `../.gitignore` is the root one. The two used to drift (97 vs 81 bytes), and a
+# rule written in the file that does not apply is a rule that does not exist.
+# Keep vault/data/secrets rules here; keep release-artefact rules at the root.

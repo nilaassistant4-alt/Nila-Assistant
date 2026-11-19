@@ -29,8 +29,9 @@ if exist "%BRAIN_HOME%\identity.json" (
   echo [4/4] Nothing else to do.
 ) else (
   echo [3/4] Creating your vault.
-  echo       Choose a LONG passphrase. WRITE DOWN the recovery codes it shows and keep them
-  echo       OFF this computer. If you lose the passphrase, your data cannot be recovered.
+  echo       Choose a LONG passphrase and write it on paper. The recovery codes it shows
+  echo       matter too - keep them off this computer: ONE of them opens the vault on its
+  echo       own if you forget the passphrase (run: start-nila.bat recovery).
   echo.
   rem The authenticator is linked inside init now, so start-nila.bat works
   rem on the first run instead of refusing until a second command is typed.

@@ -612,7 +612,9 @@ def main() -> int:
         # proves each one so the check cannot pass on a stale ZIP. Stage 14 adds
         # the four files that make "the passphrase is asked once" true, because
         # that claim is worthless if the ZIP an owner downloads is missing them.
-        required = ("brain/agent/ears.py", "brain/agent/ocr.py",
+        required = ("brain/util/calc.py", "tests/test_audit_hardening_acceptance.py",
+                    "tests/test_calc_and_recovery_acceptance.py",
+                    "brain/agent/ears.py", "brain/agent/ocr.py",
                     "brain/agent/screen.py", "brain/agent/music.py",
                     "tools/sync_lan.py", "sync-host.bat", "sync-join.bat",
                     "sync-now.bat", "getffmpeg.bat", "brain/agent/ephemeral.py",
@@ -1155,6 +1157,79 @@ def main() -> int:
 
     check("stage 14: one key or your voice brings Nila up, microphone never at sign-in",
           one_key_or_the_voice)
+
+    def audit_fixes():
+        """Stage 15: the audit's items, each measured rather than read."""
+        from brain.agent import host_tools
+        from brain.api import dashboard
+        from brain.util.calc import CalcError, safe_eval
+
+        # BUG-1: refused, fast
+        started = time.monotonic()
+        refused = 0
+        for expr in ("9**9**9**9", "9e999999999", "2**99999999", "(10**100)**100"):
+            try:
+                safe_eval(expr)
+            except CalcError:
+                refused += 1
+        fast = (time.monotonic() - started) < 0.5
+        normal = safe_eval("2+3*4") == 14
+
+        # BUG-2: the Windows shell characters and a shell-inside-the-shell
+        class Ctx:
+            def __init__(self):
+                self.calls = []
+                self.permissions = self
+                self.config = type("C", (), {"home": Path(home)})()
+
+            class D:
+                allowed = False
+                reason = "retest"
+                capability = "shell.run"
+                scope = "retest"
+                prompt_id = "retest"
+
+            def request(self, *a, **k):
+                self.calls.append(a)
+                return self.D
+
+            def audit(self, *a, **k):
+                pass
+
+        blocked = 0
+        for cmd in ("echo %USERPROFILE%", "echo hi !PATH!", "powershell -Command x"):
+            if host_tools.run_command(Ctx(), command=cmd)["ok"] is False:
+                blocked += 1
+
+        # dashboard: no battery must be a 200-shaped answer, not a raise
+        import sys as _sys
+        import types as _types
+
+        fake = _types.ModuleType("psutil")
+        fake.cpu_percent = lambda: 1.0
+        fake.virtual_memory = lambda: _types.SimpleNamespace(percent=2.0)
+
+        def no_battery():
+            raise NotImplementedError("no battery")
+
+        fake.sensors_battery = no_battery
+        real = _sys.modules.get("psutil")
+        _sys.modules["psutil"] = fake
+        try:
+            m = dashboard.metrics()
+            no_battery_ok = "cpu_pct" in m and "battery_pct" not in m
+        finally:
+            if real is not None:
+                _sys.modules["psutil"] = real
+            else:
+                _sys.modules.pop("psutil", None)
+
+        ok = refused == 4 and fast and normal and blocked == 3 and no_battery_ok
+        return (PASS if ok else FAIL,
+                f"calculator refused 4/4 in <0.5s={fast}, normal maths still {normal}, "
+                f"windows shell blocked {blocked}/3, no-battery metrics ok={no_battery_ok}")
+
+    check("stage 15: the audit's four defects are fixed and stay fixed", audit_fixes)
 
     memory.close()
     vault.lock()

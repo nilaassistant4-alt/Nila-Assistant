@@ -26,8 +26,8 @@ you ──► Nila ──► encrypted memory vault (SQLite, sealed per record)
 Requires **Python 3.10+**. No third-party packages are mandatory.
 
 ```bash
-unzip personal-brain-mvp.zip
-cd personal-brain
+unzip NILA_V02_STAGE15.zip      # the file you downloaded
+cd Nila
 
 # 1. create the vault (passphrase must be at least 8 characters)
 python3 brain.py init --label mylaptop
@@ -353,10 +353,15 @@ of them behave the same way when you ask for it.
   it is your vault, so the old passphrase is not needed — and nothing is
   re-encrypted, because the passphrase only wraps the master key. The old one
   stops working afterwards, on every machine.
-- There is no recovery if you lose the passphrase **and** all recovery codes
-  **and** every machine that remembered the key (e.g. a dead laptop with no
-  backup). Write the recovery codes down somewhere offline during `init`, and keep
-  one `brain backup` copy on a USB disk.
+- **A recovery code opens the vault by itself** — no passphrase, no phone. That is
+  what they are for, and it is why the sheet matters: `start-nila.bat recovery` (or
+  `--recovery-stdin`) is the whole ceremony. Each code wraps the master key once and
+  is deleted after it is used, so one code opens the vault exactly once and then the
+  vault should be given a passphrase you remember (`brain passphrase set`).
+- There is no recovery if you lose the passphrase **and** all recovery codes **and**
+  every machine that remembered the key (e.g. a dead laptop with no backup). Write
+  the recovery codes down somewhere offline during `init`, and keep one `brain
+  backup` copy on a USB disk.
 - "Remembered" means anyone at your unlocked desktop can open Nila. That is what a
   key in the OS store is; the journal records `unlock_via_device_key` so the
   difference between "he typed it" and "the laptop had it" is never lost.

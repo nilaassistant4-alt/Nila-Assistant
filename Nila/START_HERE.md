@@ -20,20 +20,27 @@ Tamil out, your phone both ways, a better dashboard, and `.bat` files you can tr
    - check Python (3.10 or newer) and say so in one sentence if it is missing,
    - try to install the encryption helper (`cryptography`),
    - create your vault: choose a **long passphrase** and **write down the recovery codes**
-     (keep them off this PC; if you lose the passphrase the data cannot be recovered),
+     (keep them off this PC — **one code opens the vault on its own** if the passphrase
+     is forgotten; each works once),
    - show a **setup key** — in the authenticator app choose *Enter a setup key*, account name
      `Nila`, time-based — then type the 6-digit code it shows.
 
 Your data lives in `%LOCALAPPDATA%\Nila\vault`, **outside** this folder. Replacing this folder
 with a newer version never touches your data.
 
-### Forgot the passphrase? You are not locked out
+### Forgot the passphrase? You are not locked out (and a paper code is enough)
+- **You have one recovery code** (from setup): `start-nila.bat recovery` → type the
+  code. That opens the vault **without the passphrase and without the phone**. Each
+  code works once. Right after it, run `brain passphrase set` and choose one you will
+  remember, and `brain totp` to link the authenticator again.
 - **This laptop still opens Nila** (the key is remembered): run
   `python brain.py passphrase set` in `nila-cmd.bat` and choose a new one. Every
   memory stays; the old passphrase stops working everywhere.
-- **It does not open, and you have a recovery code**: `start-nila.bat recovery`.
-- **Neither**: the vault cannot be opened by anyone, including me. That is why the
-  paper copy matters. `backup-to-d.bat` keeps a copy that a new laptop can restore.
+- **It does not open and you have no code**: only the paper passphrase or a backup can
+  open it. `backup-to-d.bat` restores onto a new laptop.
+- **Nothing at all**: nobody can open it, including me — that is what encryption
+  means. The paper passphrase, one recovery code, or a `backup-to-d.bat` copy is the
+  whole list of ways back in.
 
 ## 2. Every day — the six files you double-click
 

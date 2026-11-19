@@ -52,7 +52,11 @@ def net(monkeypatch):
                                 status=status, url=url)
         raise AssertionError(f"unexpected network call: {url}")
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    # The connector code now goes through `brain.util.http.open_public` (a public
+    # fetch may follow a redirect, but only to another public address). Patch the
+    # seam the code actually uses; patching `urllib.request.urlopen` silently stopped
+    # intercepting anything, and the "tests" started hitting the real internet.
+    monkeypatch.setattr("brain.util.http.open_public", fake_urlopen)
     return routes
 
 
@@ -253,6 +257,7 @@ def test_a_connector_call_without_permission_asks_instead_of_calling(config, vau
     def boom(*a, **k):
         raise AssertionError("nothing may go out before the owner affirms")
 
+    monkeypatch.setattr("brain.util.http.open_public", boom)
     monkeypatch.setattr("urllib.request.urlopen", boom)
     brain = Brain(config, vault, memory)
     res = brain.registry.call("web_weather", {"place": "Chennai"}, brain.tool_ctx)

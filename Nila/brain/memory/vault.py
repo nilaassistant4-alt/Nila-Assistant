@@ -277,6 +277,24 @@ class Vault:
             self._kdf_cache = {passphrase.encode(): kek}
         return kek
 
+    # The owner's actual complaint, finally answered at the root: a recovery code
+    # could replace the AUTHENTICATOR but never the passphrase, because the master
+    # key was wrapped by the passphrase alone. Somebody who forgot the passphrase -
+    # the exact person recovery codes are printed for - was locked out with their own
+    # codes in hand, and the only advice was "rename the folder". Each code now also
+    # wraps the master key, so a code opens the vault on its own.
+    @staticmethod
+    def _recovery_tag(code: str) -> bytes:
+        return hashlib.sha256(("pbx/recovery-code/v1|" + str(code).strip().lower().encode().hex())
+                              .encode()).digest()
+
+    @staticmethod
+    def _recovery_kek(code: str) -> bytes:
+        # 15 random characters from a 32-letter alphabet is ~75 bits of entropy, which
+        # is why a plain hash binds it rather than a slow KDF: a stolen
+        # identity.json cannot be attacked at that size.
+        return hashlib.sha256(b"pbx/recovery-kek/v1|" + Vault._recovery_tag(code)).digest()
+
     def _new_kdf_params(self) -> Dict[str, Any]:
         return {"alg": "scrypt", "n": self.config.kdf_n, "r": KDF_R, "p": 1,
                 "salt": b64e(random_bytes(16))}
@@ -1186,16 +1204,91 @@ class Vault:
             return None
 
     def store_recovery_codes(self, codes: List[str]) -> List[str]:
+        """Bind each code to the master key, and keep only a hash for the bookkeeping.
+
+        ``wraps[code_hash]`` is the master key encrypted with a key derived from that
+        code. A code is single-use because the entry is DELETED once spent - the same
+        rule the old hash list enforced, now with something behind it.
+        """
+        if not self._session:
+            raise RuntimeError("unlock the vault first (a code has to wrap this "
+                               "vault's master key)")
+        mk = self._session.mk
         hashed = [hashlib.sha256(c.strip().lower().encode()).hexdigest() for c in codes]
-        def apply(identity):
-            identity["recovery"] = {"hashes": hashed, "used": [], "created_at": now_ms()}
-        self._mutate_identity(apply)
+        wraps = {h: b64e(encrypt(mk, self._recovery_kek(c), aad=b"pbx/wrap/recovery"))
+                 for c, h in zip(codes, hashed)}
+        # The WRAPS live at the top level, not inside the encrypted identity blob,
+        # because opening them is what an open session would have given you - they are
+        # ciphertext under a key only the code holder has. Hashes and the used list
+        # live there too so the bookkeeping and the wraps can never disagree.
+        self.data["recovery_wraps"] = {"hashes": hashed, "used": [], "created_at": now_ms(),
+                                       "wraps": wraps}
+        self.save()
         return hashed
 
+    def unlock_with_recovery_code(self, code: str, mode: str = "recovery") -> Session:
+        """Open the vault with one printed recovery code - no passphrase, no phone.
+
+        This is the sentence the owner needed: *"I forgot the password and the
+        authenticator is gone - a paper code still gets me in."* The code proves
+        nothing about identity by itself; what it does is unwrap the master key, which
+        is the same trust the passphrase carries, so the session is marked
+        ``recovery`` and audited as such. After a successful use the code is dead.
+        """
+        if not self.initialized:
+            raise RuntimeError("vault not initialised")
+        cleaned = str(code or "").strip().lower()
+        if len(cleaned) < 8:
+            raise PermissionError("that does not look like a recovery code "
+                                  "(they look like abcde-fghij)")
+        h = hashlib.sha256(cleaned.encode()).hexdigest()
+        # `_identity()` needs an open session (it decrypts the identity blob) and we do
+        # not have one yet - the wrap table lives in the CLEARTEXT part of the vault on
+        # purpose, because it is the encrypted key itself; a hash of the code is all
+        # that identifies an entry, and only the holder of the code can use the wrap.
+        rec = (self.data.get("recovery_wraps") or {})
+        wraps = rec.get("wraps") or {}
+        blob = wraps.get(h)
+        if not blob or h in (rec.get("used") or []):
+            self.register_failure("bad-recovery-code")
+            raise PermissionError("that recovery code is not valid here, or it has "
+                                  "already been used (each one works once)")
+        try:
+            mk = decrypt(b64d(blob), self._recovery_kek(cleaned), aad=b"pbx/wrap/recovery")
+        except CryptoError as exc:
+            self.register_failure("bad-recovery-code")
+            raise PermissionError("that recovery code cannot unwrap this vault") from exc
+        if not constant_time_eq(mac(mk, SESSION_TAG), b64d(self.data["verifier"])):
+            self.register_failure("bad-recovery-code")
+            raise PermissionError("that recovery code does not match this vault")
+        # one use: drop the wrap and the hash in the same write that records the use
+        rec.setdefault("used", []).append(h)
+        rec.get("wraps", {}).pop(h, None)
+        self.data["recovery_wraps"] = rec
+        self.save()
+        self.register_success()
+        self.audit("unlock_via_recovery_code", {"via": "cli", "mode": mode})
+        return self._start_session(MasterKey(bytes(mk)), mode=mode, degraded=True)
+
     def consume_recovery_code(self, code: str) -> bool:
+        """Spend a code in place of the authenticator (passphrase already given).
+
+        Since the codes also wrap the master key they live in the top-level section;
+        this reads both places so a vault made by an earlier build keeps working and
+        `reissue_recovery_codes` is what upgrades old codes into vault-opening ones.
+        """
         if not self._session:
             return False
         h = hashlib.sha256(code.strip().lower().encode()).hexdigest()
+        top = self.data.get("recovery_wraps") or {}
+        if top.get("hashes"):
+            if h in top.get("hashes", []) and h not in top.get("used", []):
+                top.setdefault("used", []).append(h)
+                (top.get("wraps") or {}).pop(h, None)
+                self.data["recovery_wraps"] = top
+                self.save()
+                return True
+            return False
         ok = False
         def apply(identity):
             nonlocal ok
@@ -1227,11 +1320,19 @@ class Vault:
             return False
 
     def recovery_remaining(self) -> int:
-        if not self._session:
-            return 0
+        # Deliberately NOT gated on an open session: the question "how many codes do I
+        # have left?" is the one an owner asks while staring at a locked vault, and
+        # answering 0 there was a lie that made it look like there were none.
         try:
-            rec = self._identity().get("recovery") or {}
-            return len([h for h in rec.get("hashes", []) if h not in rec.get("used", [])])
+            rec = self.data.get("recovery_wraps") or {}
+            if not rec:
+                rec = self._identity().get("recovery") or {}
+            wraps = rec.get("wraps") or {}
+            # A code with no wrap is a code from before this build: it can still be
+            # spent, but it cannot open the vault, so it must not be counted as a
+            # way back in. `reissue` is what turns the old ones into usable ones.
+            return len([h for h in rec.get("hashes", [])
+                        if h not in rec.get("used", []) and h in wraps])
         except CryptoError:
             return 0
 

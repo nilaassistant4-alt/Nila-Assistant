@@ -460,10 +460,16 @@ def build_default_registry() -> ToolRegistry:
                             "money or unit question try '18% of 1250' or '5 feet in cm'")
         if not re.search(r"\d", expr):
             raise ToolError("expression has no numbers")
+        # No `eval`. A character filter cannot price a computation: `9**9**9**9` is
+        # seven allowed characters and an unbounded wait, and `9e999999999` is an
+        # integer with a billion digits. `brain/util/calc.py` parses the same
+        # expressions a person writes and refuses the ones that would not finish.
+        from ..util.calc import CalcError, safe_eval
+
         try:
-            value = eval(expr, {"__builtins__": {}}, {})   # noqa: S307 - allow-listed charset
-        except Exception as exc:
-            raise ToolError(f"cannot evaluate: {exc}") from exc
+            value = safe_eval(expr)
+        except CalcError as exc:
+            raise ToolError(str(exc)) from exc
         return {"ok": True, "expression": expr, "result": value}
 
     # -- everyday actions on this PC (stage 7) -------------------------- #

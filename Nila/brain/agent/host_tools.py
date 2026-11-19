@@ -382,6 +382,43 @@ def search_photos(ctx, path: str = "", limit: int = 25, purpose: str = "") -> Di
 #: plain command, and what runs is exactly that command.
 _SHELL_META = ("&", "|", ";", "<", ">", "`", "$(", "\n", "\r")
 
+#: On Windows the command is handed to `cmd.exe`, which has its OWN expansion rules:
+#: `%VAR%` and `!VAR!` are substituted before the program runs, and `^` is its escape
+#: character. The POSIX list above let `echo %USERPROFILE%` straight through - an
+#: external audit pointed that out. These are refused on top of it on every platform,
+#: because a % or a ! in a plain command is never worth the ambiguity.
+_CMD_EXPANSION = ("%", "!", "^")
+
+#: Programs whose whole purpose is to run another command. A single, approved
+#: `powershell -Command ...` or `cmd /c ...` defeats the metacharacter filter without
+#: using a single metacharacter - it is a shell inside the shell. Refused by name.
+_SHELL_IN_SHELL = ("cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe",
+                   "bash", "sh", "wsl", "cscript", "wscript", "mshta", "rundll32",
+                   "regsvr32", "certutil", "bitsadmin")
+
+
+def _refuse_shell_in_shell(target: str) -> str:
+    """The reason a command is refused, or '' when it is a plain program + arguments."""
+    import ntpath
+    import shlex
+
+    try:
+        argv = shlex.split(target, posix=(os.name != "nt"))
+    except ValueError as exc:                      # unbalanced quotes
+        return f"the command could not be read ({exc})"
+    if not argv:
+        return "the command is empty"
+    word = argv[0].strip().strip('"').strip("'")
+    base = ntpath.basename(word.replace("\\", "\\")).lower()
+    if base.endswith(".exe"):
+        base_noext = base[:-4]
+    else:
+        base_noext = base
+    if base in _SHELL_IN_SHELL or base_noext in _SHELL_IN_SHELL:
+        return (f"'{word}' runs OTHER commands, so it defeats the one-command rule. "
+                f"Ask for the command itself, not for a shell to run it in.")
+    return ""
+
 #: environment variables whose NAME suggests a credential. They are removed from
 #: the child process so a command can never read an API key out of the
 #: environment, whatever the approved command line says.
@@ -413,6 +450,22 @@ def run_command(ctx, command: str = "", purpose: str = "") -> Dict[str, Any]:
         return {"ok": False,
                 "error": "rejected: commands that chain, pipe or redirect (& | ; < > ` $( "
                          "or a line break) are not run. Ask for one plain command at a time."}
+    # Windows-only expansion characters, refused everywhere so behaviour does not
+    # change depending on which machine the same instruction reaches.
+    expand = next((m for m in _CMD_EXPANSION if m in target), None)
+    if expand is not None:
+        ctx.audit("host_command_rejected", {"capability": CAP_SHELL,
+                                            "reason": "expansion-character",
+                                            "sha256": sha256_hex(target.encode("utf-8"))})
+        return {"ok": False,
+                "error": (f"rejected: '{expand}' is expanded by the Windows shell before "
+                          f"anything runs (%VAR% and !VAR!), so a command containing it is "
+                          f"not run. Write the plain command without it.")}
+    why = _refuse_shell_in_shell(target)
+    if why:
+        ctx.audit("host_command_rejected", {"capability": CAP_SHELL, "reason": "shell-in-shell",
+                                            "sha256": sha256_hex(target.encode("utf-8"))})
+        return {"ok": False, "error": f"rejected: {why}"}
     decision = ctx.permissions.request(
         CAP_SHELL, target, purpose or "run a command you asked for")
     if not decision.allowed:

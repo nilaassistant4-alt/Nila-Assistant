@@ -1,5 +1,82 @@
 # Changelog
 
+## Unreleased — stage 15: the audit's findings, and the recovery code that never worked (2026-11-04)
+
+An external audit produced six defects, a second list of five "critical/high" items,
+and one sentence that mattered more than either list: *"it asks for the password
+every time and I do not know it."* The first two lists were mostly about
+`Nila-v0.1.0.zip` (an old release); three of the five were already fixed here, and
+everything still real is fixed below — plus the reason a person holding printed
+recovery codes was locked out.
+
+### Fixed — the startup problem, at the root
+- **A recovery code could not open the vault.** The codes were issued "in case you
+  forget the passphrase", but the master key was wrapped by the passphrase alone, and
+  `open_vault` asked for the passphrase **before** looking at a code. So the one person
+  they exist for was locked out holding them, and the only advice was "rename the
+  folder and start again". Each code now wraps the master key
+  (`Vault.unlock_with_recovery_code`); one code opens the vault on its own, is deleted
+  when used, marks the session `recovery`/degraded, and says what to do next. The
+  passphrase still works afterwards — a code is an alternative door, not a change of
+  lock. `store_recovery_codes` requires an open vault, `recovery_remaining()` now
+  answers while the vault is **locked** (it returned 0, which read as "you have none").
+- **The recovery code was passed as a command-line argument** (BUG-3), visible in Task
+  Manager and `ps`. `--recovery-stdin` reads it on stdin; `start-nila.bat` pipes it.
+  The ceremony flags now work in **either** position (`--x` before *or* after the
+  command), which is what a `.bat` needs.
+- **A warning that was collected and never printed** — `open_vault`'s saved-key and
+  recovery notes are now emitted once by `main()`.
+
+### Fixed — the audit's list
+- **BUG-1, a sum that never finishes.** `calculate` ran `eval` behind a character
+  filter; `9**9**9**9` passed it (and `9e999999999`, which the filter allowed because
+  of `e`, builds a billion-digit integer and kills the process on formatting).
+  `brain/util/calc.py` evaluates a small AST with no exponent chaining, exponent
+  ≤ 1000, ≤ 1000 result digits and a 200 ms budget — refused in microseconds, with
+  ordinary arithmetic unchanged and tested.
+- **BUG-2, a POSIX filter on Windows.** `cmd.exe` expands `%VAR%` and `!VAR!` and
+  treats `^` specially, and `powershell -Command …` is a shell inside the shell with no
+  metacharacter to catch. Both are refused by name now, on every platform, with the
+  same per-command approval and scrubbed environment as before.
+- **Dashboard 500 on a machine with no battery.** `metrics()` caught only
+  `ImportError`, so `psutil.sensors_battery()` raising `NotImplementedError` — every
+  desktop, VM and WSL install, and the owner's own Windows 11 PC — was an HTTP 500
+  from `/v1/metrics`. A metric that cannot be read is now left out (`battery:
+  "unavailable (…)"`), never a failed request.
+- **BUG-4, a runner that invented failures.** `scripts/run_tests.py` imitating pytest
+  produced `2 failed` for tests that pass. It now hands over to real pytest when it is
+  installed (`--shim` forces the fallback), and the fallback itself was fixed:
+  `skipif` conditions given as strings, `monkeypatch`/`capsys` support, string targets
+  like `brain.memory.vault.time.monotonic`, `delenv(raising=False)`, fixture teardown
+  actually running (it was advanced once, not twice, so a patched clock stayed
+  patched), one process per module so a leaked global cannot fail the next file, and
+  `tests/` on `sys.path`. Measured on a machine with no pytest: **1707 passed, 0
+  failed**.
+- **BUG-5, wrong names in the README** (`personal-brain-mvp.zip`, `cd personal-brain`)
+  — now the real file and folder.
+- **BUG-6, an incomplete `.gitignore`.** `memory.db`, `workspace/`, the vault, the
+  journal, `permissions.json`, `device-key.dpapi`, `build/`, `*.egg-info/` are ignored,
+  and a test asks `git check-ignore` rather than trusting the file.
+- **A redirect could aim a public fetch at a private address.** Weather/Wikipedia/
+  YouTube/RSS followed redirects anywhere, so a public host could bounce Nila to
+  `127.0.0.1:8790`. `open_public` follows a redirect only to another public address.
+
+### Added
+- `tests/test_calc_and_recovery_acceptance.py` (34) and
+  `tests/test_audit_hardening_acceptance.py` (28), including a real
+  `pip install .` into a throwaway target that imports `brain.cli.main` — the v0.1.0
+  bug cannot return silently.
+- Two retest checks (stage 15) that measure all four defects.
+
+### Verified against `Nila-v0.1.0.zip` (the audit's actual subject)
+| item | in that ZIP | here |
+|---|---|---|
+| update publish without a token | open | fixed (token required, `compare_digest`) |
+| sync-server `../` traversal | served | refused (`open_within`) |
+| redirect carrying a credential | present | `open_once` refuses |
+| `pip install .` then `brain` | `No module named 'brain.cli'` | fixed + tested |
+| dashboard, no battery | 500 | 200 |
+
 ## Unreleased — stage 14: the passphrase is typed once (2026-11-04)
 
 The owner unzipped the app, ran setup, and was asked for the passphrase at every
