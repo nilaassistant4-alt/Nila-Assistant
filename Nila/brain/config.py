@@ -28,6 +28,8 @@ APP_NAME = "personal-brain"
 #: retired BUILT-IN defaults (900 s and 7200 s) migrate. A hand-set value stays.
 CONFIG_VERSION = 3
 DEFAULT_HOME = Path(os.environ.get("BRAIN_HOME", str(Path.home() / f".{APP_NAME}")))
+#: The pointer left behind when the owner moves the data folder to another drive.
+MOVED_NOTE = "moved-to.json"
 
 # KDF work factors. Lowered automatically in tests via Config(fast_kdf=True).
 KDF_N = 2 ** 15
@@ -57,6 +59,10 @@ class Config:
     fast_kdf: bool = False
     session_timeout: int = SESSION_TIMEOUT_SECONDS
     session_absolute_timeout: int = SESSION_ABSOLUTE_TIMEOUT_SECONDS
+    #: Set when ``moved-to.json`` points at a folder that is not reachable (an
+    #: unplugged D:). Read by ``come-from`` / ``lock-check`` so the owner is told
+    #: "your data folder is not connected" instead of quietly writing to C:.
+    moved_to_missing: str = ""
     sync: Dict[str, Any] = field(default_factory=dict)
     updates: Dict[str, Any] = field(default_factory=dict)
     agent: Dict[str, Any] = field(default_factory=dict)
@@ -84,6 +90,13 @@ class Config:
 
         A drive that is gone is a refusal, not a smaller database: recreating an
         empty store on C: would make the owner's whole history look deleted.
+
+        The folder is CREATED here when the owner has set one on purpose, because
+        the alternative was measured and is worse: ``brain storage --set D:/x``
+        wrote the setting, and the next command died with
+        ``sqlite3.OperationalError: unable to open database file`` - the folder was
+        simply never made. An empty *folder* is not an empty vault; ``memory.db``
+        itself is only ever created by ``MemoryStore``.
         """
         configured = str((self.agent or {}).get("storage_dir") or "").strip()
         if not configured:
@@ -98,6 +111,12 @@ class Config:
         # yet; a getter that makes folders turns "show me the setting" into a
         # side effect. `ensure_layout` creates it when it is actually used.
         if drive_ok:
+            if (self.agent or {}).get("storage_create"):
+                try:
+                    target.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    raise StorageUnavailable(
+                        f"the storage folder {target} could not be created: {exc}")
             return target / "memory.db"
         if (self.agent or {}).get("storage_fallback_to_c"):
             return self.home / "memory.db"
@@ -153,7 +172,21 @@ class Config:
     @classmethod
     def load(cls, home: Optional[Path | str] = None) -> "Config":
         path = Path(home) if home else DEFAULT_HOME
+        # WHICH FOLDER HOLDS THE VAULT CAN MOVE, and until stage 17 nothing read
+        # the note that says so. `move-to-d.bat` copied the vault to D:, checked
+        # every byte, then wrote ``agent.home`` into the config - and every later
+        # start still read ``%LOCALAPPDATA%\\Nila\\vault``, found the ORIGINAL
+        # folder, and told the owner "your memories are not here". The note at the
+        # old place is the pointer: follow it once, keep the caller's explicit
+        # ``--home``/BRAIN_HOME when it is given, and never follow a note that
+        # points at nothing (a disconnected D: must be a clear error, not an
+        # empty vault on C:).
+        requested = path
+        note_home = cls._new_home_note(path)
+        if note_home:
+            path = note_home
         cfg = cls(home=path)
+        cfg.moved_to_missing = cls.missing_move_target(requested)
         cfg.ensure_layout()
         if cfg.config_path.exists():
             try:
@@ -186,6 +219,58 @@ class Config:
             except Exception:
                 pass  # corrupt config -> fall back to defaults, never crash
         return cfg
+
+    # -- the vault folder that moved (D:) ---------------------------------- #
+    @staticmethod
+    def _new_home_note(path: Path) -> Optional[Path]:
+        """The folder named in ``<old>/moved-to.json``, if it is there right now.
+
+        Written by ``tools/move_storage.py`` after a verified copy. Two rules: the
+        pointer is followed only when the new folder exists (a disconnected D: is
+        reported as ``moved_to_missing``, never silently replaced by the old copy
+        - that is how a vault appears to lose a week of memories), and a pointer
+        at itself is ignored.
+        """
+        note = Path(path) / MOVED_NOTE
+        try:
+            data = json.loads(read_bytes(note))
+        except Exception:
+            return None
+        target = str(data.get("home") or data.get("moved_to") or "").strip()
+        if not target:
+            return None
+        new_path = Path(target).expanduser()
+        try:
+            if new_path.resolve() == Path(path).resolve():
+                return None
+        except OSError:
+            return None
+        return new_path if new_path.is_dir() else None
+
+    @staticmethod
+    def missing_move_target(path: Path) -> str:
+        """The folder a move points at, when it is not reachable. Empty otherwise."""
+        note = Path(path) / MOVED_NOTE
+        try:
+            data = json.loads(read_bytes(note))
+        except Exception:
+            return ""
+        target = str(data.get("home") or data.get("moved_to") or "").strip()
+        if not target:
+            return ""
+        return "" if Path(target).expanduser().is_dir() else target
+
+    @staticmethod
+    def write_move_note(old_home: Path, new_home: Path) -> Path:
+        """Leave a pointer at the old place, so the next start finds the vault."""
+        note = Path(old_home) / MOVED_NOTE
+        payload = {"moved_to": str(Path(new_home)), "home": str(Path(new_home)),
+                   "moved_at_ms": int(__import__("time").time() * 1000),
+                   "note": ("Nila's data now lives in the folder above. This file is "
+                            "only a pointer; the vault was copied, never moved, and "
+                            "nothing in this folder was deleted.")}
+        write_private(note, json.dumps(payload, indent=2).encode())
+        return note
 
     # -- typed views ------------------------------------------------------- #
     def provider_config(self, role: Optional[str] = None) -> Dict[str, Any]:

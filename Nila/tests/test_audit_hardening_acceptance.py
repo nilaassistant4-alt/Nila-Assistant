@@ -230,6 +230,30 @@ def test_the_fallback_runner_reports_no_failures_on_a_module_that_passes(tmp_pat
     assert "FAIL " not in text, text[-1500:]
 
 
+def test_a_called_skip_stops_the_test_instead_of_falling_through():
+    """Measured on an extracted ZIP: 9 FAILs for 9 tests that had skipped.
+
+    `pytest.skip()` is a control-flow exception. The shim's version returned None,
+    so the lines after it ran - including the assert the skip existed to avoid.
+    """
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        import run_tests as runner
+
+        # pytest.skip() ALWAYS raises - it is control flow, not a marker
+        with pytest.raises(runner._Skipped):
+            runner.skip("not inside a git work tree")
+        # ...and that is the function the shim actually binds
+        import inspect
+
+        assert "raise _Skipped" in inspect.getsource(runner.skip)
+        # the decorator form is pytest.mark.skip, exactly as in pytest
+        marked = runner.Param().skip("a reason")(lambda: None)
+        assert marked._nila_skip == "a reason"
+    finally:
+        sys.path.remove(str(ROOT / "scripts"))
+
+
 def test_the_shim_honours_a_skipif_given_as_a_string():
     sys.path.insert(0, str(ROOT / "scripts"))
     try:

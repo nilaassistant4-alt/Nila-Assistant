@@ -55,9 +55,16 @@ brain come-from             :: "I just extracted it, it asks for a password" - w
 nila-first-run.bat          :: setup (if needed) + remember this laptop + check
 brain passphrase status     :: will it ask me again?  (a plain yes/no)
 brain lock-check            :: the same, with the four reasons on one screen
-brain hotkey --write        :: a desktop shortcut; set Ctrl+Alt+N on it once
-nila-easy-start.bat         :: everyday start: shortcut, voice, then Nila
+brain hotkey --write        :: the Desktop icon; set Ctrl+Alt+N on it once
+nila-easy-start.bat         :: everyday start: icon, voice, then Nila
 ```
+
+`brain hotkey --write` writes **two** files: the Nila icon on the Desktop (which
+always works) and a `.lnk` plus `nila-start.vbs` next to `brain.py`. Windows owns
+the *Shortcut key* box - there is no API for it - so opening the icon's Properties
+once and pressing `Ctrl+Alt+N` is the step only you can take. Every generated
+launcher runs `brain --home <vault> dashboard`: `--home` is a global option, so it
+goes **before** the command (`start` was only an alias of `dashboard`).
 
 `remember` stores the **master key** in the OS secret store (Windows Credential
 Locker, macOS Keychain, Linux Secret Service; on Windows, DPAPI per-user as a
@@ -614,6 +621,17 @@ decode job and pretending otherwise would be a lie about what was analysed.
     brain storage                       # where it lives, size, free space
     brain storage --fallback-c on       # allow C: if the drive is missing
 
+On the desktop, two `.bat` files do it with the copy-compare-switch order:
+
+- **`move-memories-to-d.bat`** - only the memories (`memory.db`). Copies, compares
+  every file by SHA-256, and only then leaves `moved-to.json` in the old folder.
+  `Config.load` follows that pointer, so **every** start opens the new folder. The
+  old file is kept; nothing is deleted. If D: is not connected later, Nila says so
+  and changes nothing instead of starting an empty store on C:.
+- **`move-to-d.bat`** - the same for the whole vault (type `1`), or the file above
+  (type `2`). It never copies silently: the dry run prints what would move, and
+  nothing happens without typing `YES`.
+
 The encrypted store can live on any drive. If the drive is gone, Nila refuses
 instead of quietly creating an empty archive on C: - that would make a full
 history look deleted. Nothing is deleted on a schedule: `brain forget <id>`
@@ -821,9 +839,11 @@ the interview as one box - the next question and an answer field.
 Two Windows helpers, both safe by construction:
 
 - **`move-to-d.bat`** - copies your vault to another drive, compares every file
-  by SHA-256, and only then switches `BRAIN_HOME`. It refuses while Nila is
-  running, refuses to merge two data folders, and keeps the old folder as
-  `vault-old` until *you* delete it.
+  by SHA-256, and only then leaves the pointer `brain.config` actually reads
+  (`moved-to.json`). It used to write `agent.home` into `config.json`, which
+  nothing read: every start after a "successful" move still opened the old folder.
+  It refuses while Nila is running, refuses to merge two data folders, and deletes
+  nothing.
 - **`backup-to-d.bat`** - writes a dated backup, then restores it into a
   temporary folder and compares record counts. A backup that has not been
   restored is a guess, so a mismatch is reported as **BACKUP FAILED**. It

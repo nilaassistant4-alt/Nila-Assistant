@@ -612,8 +612,9 @@ def main() -> int:
         # proves each one so the check cannot pass on a stale ZIP. Stage 14 adds
         # the four files that make "the passphrase is asked once" true, because
         # that claim is worthless if the ZIP an owner downloads is missing them.
-        required = ("brain/util/calc.py", "nila-start.bat",
+        required = ("brain/util/calc.py", "nila-start.bat", "move-memories-to-d.bat",
                     "tests/test_startup_and_old_password_acceptance.py",
+                    "tests/test_one_file_one_key_d_drive_acceptance.py",
                     "tests/test_audit_hardening_acceptance.py",
                     "tests/test_calc_and_recovery_acceptance.py",
                     "brain/agent/ears.py", "brain/agent/ocr.py",
@@ -634,6 +635,82 @@ def main() -> int:
                 f"bytes, junk={len(bad)}, missing={missing or 'none'}")
 
     check("packaging: the ZIP carries the current code", packaging)
+
+    def cmd_parse_time_trap():
+        """A `set /p` and an `echo %X%|` in one (...) block: the pipe gets an EMPTY
+        line, because cmd.exe expands %X% when it parses the whole block. Measured
+        on the recovery path, which could therefore never work."""
+        import re as _re
+
+        bad = []
+        for path in sorted(ROOT.glob("*.bat")):
+            text = path.read_text(errors="replace")
+            for block in _re.finditer(r"\((\r?\n.*?)\r?\n\)", text, _re.S):
+                body = block.group(1)
+                for name in {m.group(1) for m in _re.finditer(r"set /p\s+(\w+)=", body)}:
+                    if _re.search(r"(?m)^\s*echo\s+%" + name + r"%\s*\|", body):
+                        bad.append(f"{path.name}: %{name}%")
+        return (PASS if not bad else FAIL,
+                "no variable is expanded in the same block that sets it" if not bad
+                else f"would pipe an empty line: {bad}")
+
+    check("start: a typed value is never expanded too early (cmd.exe)", cmd_parse_time_trap)
+
+    def launcher_command_parses():
+        """The generated .vbs/.bat/.desktop must run a command the parser accepts.
+        `--home` is a global option: after the subcommand it is 'unrecognized'."""
+        sys.path.insert(0, str(ROOT))
+        import re as _re
+
+        from brain.cli.main import build_parser
+        from brain.util import launcher
+
+        vbs = launcher.windows_vbs("C:/py/python.exe", "C:/nila/brain.py",
+                                   "C:/Users/me/nila-vault")
+        line = [ln for ln in vbs.splitlines() if ln.startswith("sh.Run")][0]
+        argv = _re.findall(r'""([^"]*)""', line)[2:]
+        try:
+            parsed = build_parser().parse_args(argv)
+        except SystemExit:
+            return FAIL, f"the generated shortcut does not parse: {argv}"
+        ok = (parsed.command == "dashboard"
+              and str(parsed.home).endswith("nila-vault"))
+        return (PASS if ok else FAIL,
+                f"runs `brain --home <vault> {parsed.command}` (the documented one)"
+                if ok else f"generated {parsed.command} for home {parsed.home}")
+
+    check("start: one key runs a command that parses", launcher_command_parses)
+
+    def the_memories_can_move_to_another_drive():
+        """Copy to a second folder, compare, leave the pointer - then prove the same
+        BRAIN_HOME opens the new folder and the remembered key still works."""
+        import importlib.util
+        import tempfile
+
+        spec = importlib.util.spec_from_file_location(
+            "move_storage_retest", ROOT / "tools" / "move_storage.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        from brain.config import Config
+        from brain.memory.vault import Vault
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "vault"
+            config = Config.load(home)
+            config.fast_kdf = True
+            vault = Vault(config)
+            vault.initialize("a-passphrase-for-the-move", "Owner", "dev-retest")
+            vault.lock()
+            target = Path(tmp) / "D" / "Nila-data"
+            code = mod.move(home, target, dry_run=False, yes=True)
+            moved = Config.load(home)
+            reopened = Vault(moved).verify_passphrase("a-passphrase-for-the-move")
+            ok = code == 0 and moved.home == target and reopened
+            return (PASS if ok else FAIL,
+                    f"moved to {target}, pointer followed, passphrase still opens it"
+                    if ok else f"move code={code}, home={moved.home}, passphrase={reopened}")
+
+    check("memories: they can move to another drive and still open", the_memories_can_move_to_another_drive)
 
     def package_integrity():
         sys.path.insert(0, str(ROOT))

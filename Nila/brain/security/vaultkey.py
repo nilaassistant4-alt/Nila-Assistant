@@ -50,7 +50,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 SERVICE = "nila-assistant"
 USER_PLACEHOLDER = "device-master-key"
@@ -144,11 +144,46 @@ def _secret(master_key: bytes, home: Path) -> str:
     return base64.b64encode(master_key).decode() + "|" + str(Path(home).resolve())
 
 
+def _home_chain(home: Path, hops: int = 5) -> List[Path]:
+    """``home`` plus every folder it was moved FROM/TO, following moved-to.json.
+
+    When the owner moves the data to D: the copy is byte-verified, but the key in
+    the OS store says the OLD path - so without this the next start dropped a
+    perfectly good key and asked for the passphrase again, which is the exact
+    complaint (in the exact place the owner asked for) that this module exists to
+    answer. The pointer file is written only after a verified copy, so the chain
+    names folders that hold the same vault.
+    """
+    chain: List[Path] = []
+    current = Path(home).expanduser()
+    for _ in range(max(1, hops)):
+        try:
+            resolved = current.resolve()
+        except OSError:
+            resolved = current
+        if resolved in chain:
+            break
+        chain.append(resolved)
+        note = current / "moved-to.json"
+        try:
+            data = json.loads(note.read_text(encoding="utf-8"))
+        except Exception:
+            break
+        target = str(data.get("home") or data.get("moved_to") or "").strip()
+        if not target:
+            break
+        current = Path(target).expanduser()
+    return chain
+
+
 def _parse(blob: str, home: Path) -> Optional[bytes]:
     try:
         encoded, _, stored_home = str(blob).partition("|")
-        if stored_home and Path(stored_home) != Path(home).resolve():
-            return None                      # a key for another vault
+        if stored_home:
+            stored = Path(stored_home).expanduser()
+            target = Path(home).expanduser()
+            if stored != target and target.resolve() not in _home_chain(stored):
+                return None                  # a key for another vault
         return base64.b64decode(encoded)
     except Exception:
         return None

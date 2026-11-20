@@ -8,17 +8,20 @@ Tamil out, your phone both ways, a better dashboard, and `.bat` files you can tr
 ## 1. One-time setup (about 5 minutes)
 
 1. Extract this ZIP to `C:\Nila` (right-click → **Extract All**). You do this **once**;
-   after that, nothing needs extracting again.
-   **Then double-click `nila-start.bat` — that one file is the whole start.** It shows
-   which vault folder it found (your memories live in `%LOCALAPPDATA%\Nila\vault`,
-   *not* in the folder you extracted), says whether this laptop will ask for a password,
-   and stops with a readable message instead of a black window that closes.
+   after that, nothing needs extracting again. **Do not delete the old folder** — your
+   memories are not in it (they live in `%LOCALAPPDATA%\Nila\vault`).
 2. On your phone install **Google Authenticator** or **Microsoft Authenticator**.
-3. **Double-click `nila-first-run.bat`** (not `setup.bat`). It runs setup, then makes
-   this laptop remember the key, then prints the plain answer to *will it ask me
-   again?*. **The passphrase is typed once here and never again on this laptop.**
+3. **Double-click `nila-start.bat` — that one file is the whole start.** It says which
+   vault folder it found and where the memories file is, says whether this laptop will
+   ask for a password, sets the vault up **only if there is none**, remembers the key,
+   and puts the **Nila icon on the Desktop** (one double-click from then on; Windows
+   asks you for the key itself: right-click the icon → Properties → *Shortcut key*).
+   It stops with a readable message instead of a black window that closes.
+   **The passphrase is typed once here and never again on this laptop.**
    Write the passphrase and the recovery codes on paper anyway: they are what opens
    Nila on a **different** laptop, or after a reinstall of Windows.
+   `nila-first-run.bat` is the same thing with more talking — it is safe to run it
+   instead, and safe to run it twice.
 4. If you prefer the old way, `setup.bat` still works — it just does not remember
    the laptop, so you would type the passphrase each time. `setup.bat` will:
    - check Python (3.10 or newer) and say so in one sentence if it is missing,
@@ -31,6 +34,21 @@ Tamil out, your phone both ways, a better dashboard, and `.bat` files you can tr
 
 Your data lives in `%LOCALAPPDATA%\Nila\vault`, **outside** this folder. Replacing this folder
 with a newer version never touches your data.
+
+### The memories on D: (the big drive) — the honest version
+
+Two different things are called "moving to D:", and Nila does both, separately:
+
+| What you want | Double-click | What it does |
+|---|---|---|
+| the **memories file** on D: | `move-memories-to-d.bat` | copies `memory.db` to the folder you type, compares **every** file by SHA-256, and only then leaves `moved-to.json` in the old folder. Every start reads that pointer. The old file is kept. |
+| the **whole vault** on D: | `move-to-d.bat` → type `1` | the same, for the whole folder (vault + memories). Type `2` there and it runs the file above. |
+
+Both ask **before** copying, both can be cancelled with no change, and neither deletes
+anything. If the D: drive is unplugged later, Nila says **"your data folder is not
+connected"** and changes nothing — it never quietly starts an empty vault on C:.
+`brain storage --set D:/folder` is the one-command form of the same idea, and it now
+says where the old memories stayed instead of opening an empty store.
 
 ### Forgot the passphrase? You are not locked out (and a paper code is enough)
 - **You have one recovery code** (from setup): `start-nila.bat recovery` → type the
@@ -50,7 +68,8 @@ with a newer version never touches your data.
 
 | File | What it does | When |
 |---|---|---|
-| `nila-start.bat` | **the one to double-click**: finds the vault, sets it up only if there is none, remembers this laptop, opens Nila | every day |
+| `nila-start.bat` | **the one to double-click**: finds the vault, sets it up only if there is none, remembers this laptop, writes the Desktop icon once, opens Nila | every day |
+| `move-memories-to-d.bat` | copies the memories to D:, compares every file, leaves the pointer | once, or when you change drives |
 | `nila-first-run.bat` | setup + remember this laptop + check, in one double-click | once |
 | `nila-easy-start.bat` | shortcut, voice, check, then Nila | every day (the easy one) |
 | `setup.bat` | one-time setup on its own, safe to run twice | once |

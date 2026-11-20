@@ -37,6 +37,20 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
 
 
+def skip(reason: str = "", *args, **kwargs):
+    """``pytest.skip()`` must RAISE - that is what stops the test.
+
+    It used to be a lambda returning None in the shim, so
+    ``pytest.skip("not inside a git work tree")`` fell through to the next line and
+    an extracted ZIP (no .git) reported 9 FAILs for 9 tests that had decided
+    correctly. As a decorator it still marks the function instead.
+    """
+    if callable(reason):                      # bare @pytest.mark.skip
+        reason._nila_skip = "skip"
+        return reason
+    raise _Skipped(str(reason or "skip"))
+
+
 def load(path: pathlib.Path):
     name = "nila_tests_" + path.stem
     spec = importlib.util.spec_from_file_location(name, path)
@@ -137,7 +151,14 @@ class Param:
             return fn
         return wrap
 
-    def skip(self, reason=""):
+    def skip(self, reason="", *args, **kwargs):
+        """``pytest.mark.skip`` - the MARK. It never raises; it marks the function.
+
+        ``self`` is explicit: without it a bound call put the Param INSTANCE into
+        `reason`, so `@pytest.mark.skip("a reason")` marked the function with
+        "a reason" -> no: it marked it with the Param object, and the real reason
+        was silently dropped.
+        """
         if callable(reason):                      # bare @pytest.mark.skip
             reason._nila_skip = "skip"
             return reason
@@ -335,7 +356,8 @@ def main(argv: list[str]) -> int:
     # pytest allows because it puts the test file's own directory on sys.path. Without
     # this the fallback reported a false "IMPORT ERROR" for a module that is fine.
     sys.path.insert(0, str(TESTS))
-    wanted = argv[1] if len(argv) > 1 else None
+    rest = [a for a in argv[1:] if a != "--shim"]
+    wanted = rest[0] if rest else None
 
     # provide a `pytest` shim only if the real one is absent
     try:
@@ -369,7 +391,9 @@ def main(argv: list[str]) -> int:
         shim.approx = lambda expected, **k: _Approx(expected, **k)
         shim.fail = lambda msg="": (_ for _ in ()).throw(AssertionError(msg))
         shim.param = lambda *a, **k: a
-        shim.skip = lambda reason="": None
+        shim.skip = skip                      # RAISES, like pytest: a called skip ends
+                                              # the test (it used to fall through to
+                                              # the next line, i.e. into the assert)
         shim.__version__ = "0.0-fallback"
         sys.modules["pytest"] = shim
 
@@ -397,8 +421,13 @@ def main(argv: list[str]) -> int:
         failing: list = []
         skip_reasons_all: dict = {}
         for path in files:
+            # `--shim` must be passed on: without it each child found the real pytest
+            # installed, handed the module over to it, and printed no RESULT line -
+            # so the fallback reported "59 failed" on a machine where every test
+            # passes. (Measured, not guessed: `--one test_bat_hygiene` on its own
+            # printed the passing dots and then "FAIL (module did not report)".)
             proc = subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve()),
-                                   path.stem, "--one"],
+                                   path.stem, "--one", "--shim"],
                                   capture_output=True, text=True, cwd=str(ROOT))
             out = proc.stdout or ""
             m = re.search(r"^RESULT pass=(\d+) fail=(\d+) skip=(\d+)$", out, re.M)
@@ -494,10 +523,10 @@ def main(argv: list[str]) -> int:
                     fn(**kwargs)
                     mod_pass += 1
                 except _Skipped as exc:
-                    # `pytest.skip()` raises; the fallback must honour it as a
-                    # skip, not report a failing test. Without this, a machine
-                    # with no distributable ZIP showed two FAILs from
-                    # test_package_integrity (audit F11).
+                    # `pytest.skip()` raises (the shim does now too); honour it as a
+                    # skip instead of a failure. Without this, a machine with no
+                    # distributable ZIP showed two FAILs from test_package_integrity
+                    # (audit F11) and an extracted copy showed nine more.
                     mod_skip += 1
                     skip_reasons[f"skip: {exc}"] = skip_reasons.get(f"skip: {exc}", 0) + 1
                 except Exception:

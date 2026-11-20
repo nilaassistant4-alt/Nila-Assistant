@@ -50,9 +50,11 @@ if exist "%BRAIN_HOME%\identity.json" (
   echo       Nila will not open without that code, which is the point.
 )
 echo.
-echo Setup finished.
-echo   start-nila.bat   start Nila (the dashboard opens in your browser)
-echo   nila-phone.bat   answer Telegram messages from your phone
-echo   report.bat       what is wrong, if something is wrong
-echo   START_HERE.md    Ollama (local AI) and Gemini (online AI), in order
+echo Setup finished. From now on, ONE file:
+echo   nila-start.bat   double-click it - it opens Nila and asks nothing
+echo.
+echo   nila-phone.bat        answer Telegram messages from your phone
+echo   move-memories-to-d.bat  put the memories on D:, by copying and checking
+echo   report.bat            what is wrong, if something is wrong
+echo   START_HERE.md         Ollama (local AI) and Gemini (online AI), in order
 pause

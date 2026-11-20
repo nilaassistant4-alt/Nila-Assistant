@@ -14,5 +14,12 @@ rem here as well means a plain `nila-cmd.bat` window does not print mojibake.
 chcp 65001 >nul 2>&1
 rem A single place that answers "which Python will run?" so a .bat that cannot
 rem find Python says so in one sentence instead of failing with 'not recognized'.
-set "NILA_PY=python"
-where py >nul 2>&1 && set "NILA_PY=py -3"
+rem ONE executable, with no space in the command: "%NILA_PY%" is quoted in 42
+rem places, and a quoted two-word command ("py -3") is not a program name -
+rem cmd.exe answers "The system cannot find the path specified" and the window
+rem closes on the owner, which is exactly the silent failure this file exists to
+rem prevent. So ask the launcher for the real python.exe path: one token.
+set "NILA_PY="
+for /f "delims=" %%P in ('py -3 -c "import sys;print(sys.executable)" 2^>nul') do if not defined NILA_PY set "NILA_PY=%%P"
+if not defined NILA_PY for /f "delims=" %%P in ('where python 2^>nul') do if not defined NILA_PY set "NILA_PY=%%P"
+if not defined NILA_PY set "NILA_PY=python"

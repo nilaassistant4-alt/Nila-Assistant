@@ -26,15 +26,22 @@ if errorlevel 1 (
 )
 echo Close this window ^(or press Ctrl+C^) to stop Nila and lock the vault.
 echo.
-if /i "%~1"=="recovery" (
-  rem The code is typed here and PIPED in, never put on the command line: an
-  rem argument is visible to Task Manager, ps and any log that records argv.
-  set /p RC=Type ONE recovery code: 
-  echo %RC%| "%NILA_PY%" brain.py dashboard --recovery-stdin
-) else (
-  "%NILA_PY%" brain.py dashboard
-)
+rem NOT `if (...) else (...)`: inside a parenthesised block cmd.exe expands
+rem %NILA_CODE% when it PARSES the block, i.e. before the owner has typed it, so
+rem the code was sent as an empty line. Labels run line by line instead.
+if /i "%~1"=="recovery" goto :nila_recovery
+"%NILA_PY%" brain.py dashboard
 set RC=%ERRORLEVEL%
+goto :nila_after
+
+:nila_recovery
+rem The code is typed here and PIPED in, never put on the command line: an
+rem argument is visible to Task Manager, ps and any log that records argv.
+set /p NILA_CODE=Type ONE recovery code: 
+echo %NILA_CODE%| "%NILA_PY%" brain.py dashboard --recovery-stdin
+set RC=%ERRORLEVEL%
+
+:nila_after
 echo.
 if not "%RC%"=="0" (
   echo Nila stopped with code %RC%. The line just above says why.

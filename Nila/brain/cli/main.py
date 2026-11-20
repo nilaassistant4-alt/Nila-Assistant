@@ -2281,7 +2281,16 @@ def cmd_storage(args, ui: UI) -> int:
 
     config = Config.load(args.home)
     agent = dict(config.agent or {})
+    previous = ""
     if args.set:
+        # Switching the folder does NOT move memories, and saying nothing about
+        # that is how "my memories are gone" happens: the new, empty store opens
+        # while the old one still sits where it was. So the old path is printed
+        # before and after, and a non-empty one is named as still there.
+        try:
+            previous = str(config.memory_path)
+        except Exception:
+            previous = ""
         agent["storage_dir"] = str(Path(args.set).expanduser())
         agent["storage_create"] = True
         config.agent = agent
@@ -2303,7 +2312,19 @@ def cmd_storage(args, ui: UI) -> int:
                  "fallback": bool(agent.get("storage_fallback_to_c"))})
         return 1
     exists = path.exists()
+    left_behind = ""
+    if previous and previous != str(path):
+        try:
+            old_size = Path(previous).stat().st_size
+        except OSError:
+            old_size = 0
+        if old_size:
+            left_behind = (f"the memories you already had are still in {previous} "
+                           f"({round(old_size / 1048576, 2)} MB) and were NOT copied. To "
+                           f"take them along, close Nila and run move-to-d.bat, which "
+                           f"copies, compares every file, and only then switches.")
     ui.emit({"ok": True, "store": str(path),
+             "previous_store": previous, "left_behind": left_behind,
              "configured": agent.get("storage_dir") or "(default: the Nila home folder)",
              "fallback_to_c": bool(agent.get("storage_fallback_to_c")),
              "exists": exists,
@@ -3805,6 +3826,7 @@ def cmd_hotkey(args, ui: UI) -> int:
     the owner asked for.
     """
     from ..util import hotkey
+    from ..util import launcher
 
     config = Config.load(args.home)
     if args.check or not (args.write or args.startup or args.voice):
@@ -3836,6 +3858,25 @@ def cmd_hotkey(args, ui: UI) -> int:
         return 0
     wrote: List[str] = []
     if args.write:
+        # The ICON first. An owner who wants "one key" was being given a shortcut
+        # file and a note about a shortcut key, with no icon anywhere - and if the
+        # "Shortcut key" box is left empty (Windows has to be told by hand, there
+        # is no API), pressing Ctrl+Alt+N did nothing at all. The icon is the part
+        # that always works, so it is written by the same command, says where it
+        # is, and only then is the key explained.
+        try:
+            icons = launcher.write_launchers(
+                config.home, out_dir=Path.home() / "Desktop")
+        except launcher.LauncherError as exc:
+            icons = {"ok": False, "written": [], "error": str(exc)}
+        wrote += [str(p) for p in (icons.get("written") or [])]
+        if not args.json:
+            if icons.get("written"):
+                ui.ok("icon on your Desktop")
+                for path in icons["written"]:
+                    print(f"  {path}")
+            elif icons.get("error"):
+                ui.say(f"  the icon could not be written: {icons['error']}")
         try:
             out = hotkey.write_hotkey_shortcut(config.home)
         except hotkey.HotkeyError as exc:
@@ -3862,7 +3903,7 @@ def cmd_hotkey(args, ui: UI) -> int:
                 # ALWAYS the dashboard, never the microphone: a sign-in shortcut
                 # that opened a mic is an always-on listener arriving by the back
                 # door, and `write_startup` refuses it outright.
-                out = launcher.write_startup(config.home, arguments="start")
+                out = launcher.write_startup(config.home, arguments="dashboard")
             except launcher.LauncherError as exc:
                 return ui.err(str(exc))
             wrote.append(out["written"])
@@ -3904,6 +3945,28 @@ def cmd_come_from(args, ui: UI) -> int:
                            "remembered": saved["remembered"],
                            "remember_method": saved["method"]}
 
+    # WHERE THE MEMORIES ARE - the second half of "it does not work after I move
+    # it". Two separate things can be true and were never shown: the data folder
+    # may have been moved to another drive (moved-to.json at the old place), and
+    # the archive itself may sit in a folder of its own (`brain storage --set`).
+    from ..config import StorageUnavailable
+
+    storage = ""
+    try:
+        storage = str(config.memory_path)
+    except StorageUnavailable as exc:
+        out["storage_problem"] = str(exc)
+    out["memories"] = storage
+    out["moved_to_missing"] = config.moved_to_missing
+    moved_home = ""
+    try:
+        requested = Path(args.home).expanduser() if getattr(args, "home", None) else None
+    except Exception:
+        requested = None
+    if requested and Path(requested).resolve() != Path(config.home).resolve():
+        moved_home = str(requested)
+    out["vault_moved_from"] = moved_home
+
     codes_total = codes_usable = 0
     if vault.initialized:
         rec = vault.data.get("recovery_wraps") or {}
@@ -3937,7 +4000,12 @@ def cmd_come_from(args, ui: UI) -> int:
     moved = bool(remembered_path) and remembered_path != str(config.home)
     out["moved_from"] = remembered_path if moved else ""
 
-    if not vault.initialized:
+    if config.moved_to_missing:
+        next_step = (f"Your data folder {config.moved_to_missing} is not connected, so "
+                     f"Nila is reading nothing. Plug that drive in (or fix the drive "
+                     f"letter) and start again - NOTHING has been changed or lost, and "
+                     f"no new empty vault was made.")
+    elif not vault.initialized:
         next_step = ("There is no vault on this laptop yet: double-click "
                      "nila-first-run.bat. It asks you to CHOOSE a passphrase once, "
                      "shows recovery codes, and remembers this laptop.")
@@ -3972,6 +4040,15 @@ def cmd_come_from(args, ui: UI) -> int:
           + (f"   ({saved['method']})" if saved["remembered"] else ""))
     if vault.initialized:
         print(f"recovery codes      : {codes_total} left, {codes_usable} can open the vault")
+    if out.get("memories"):
+        print(f"memories stored at  : {out['memories']}")
+    if out.get("storage_problem"):
+        print(f"memories stored at  : NOT REACHABLE - {out['storage_problem']}")
+    if out.get("vault_moved_from"):
+        print(f"vault folder moved  : this start used {out['vault']} (the old folder "
+              f"{out['vault_moved_from']} only holds a pointer)")
+    if config.moved_to_missing:
+        print(f"CONNECT THIS DRIVE   : {config.moved_to_missing} - it is not there now")
     print(f"passphrase changed  : {'yes, from this machine' if changed else 'never, on this machine'}")
     if out["last_used"]:
         print(f"last used           : {out['last_used']}  ({last_event})")
@@ -4019,7 +4096,14 @@ def cmd_lock_check(args, ui: UI) -> int:
     else:
         next_start = ("start-nila.bat will ask for the passphrase, then the code. "
                       "Run `brain passphrase remember` once to stop that.")
+    from ..config import StorageUnavailable
+
+    try:
+        memories = str(config.memory_path)
+    except StorageUnavailable as exc:
+        memories = f"NOT REACHABLE - {exc}"
     out = {"ok": True, "vault": str(config.home), "has_vault": has_vault,
+           "memories": memories, "moved_to_missing": config.moved_to_missing,
            "remembered": saved["remembered"], "method": saved["method"],
            "authenticator_enrolled": has_totp, "voice_enrolled": has_voice,
            "session_minutes": int(config.session_timeout // 60),
@@ -4036,6 +4120,11 @@ def cmd_lock_check(args, ui: UI) -> int:
     print("Nila - how it opens on this laptop")
     print("─" * 62)
     print(f"vault          : {out['vault'] if has_vault else 'none yet'}")
+    print(f"memories       : {out['memories']}")
+    if config.moved_to_missing:
+        print(f"                 the data folder {config.moved_to_missing} is NOT connected")
+    print(f"one key        : double-click the Nila icon (Desktop), or Ctrl+Alt+N once "
+          f"Windows has it")
     print(f"no-password    : {'YES - this laptop remembers the key' if saved['remembered'] else 'no'}"
           + (f"  ({saved['method']})" if saved["remembered"] else ""))
     print(f"authenticator  : {'enrolled' if has_totp else 'not enrolled'}")

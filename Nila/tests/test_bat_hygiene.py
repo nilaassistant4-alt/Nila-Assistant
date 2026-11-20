@@ -35,7 +35,9 @@ DOCUMENTED = {"start-nila.bat", "setup.bat", "report.bat", "nila-phone.bat",
               # stage 14: the two files that answer "it keeps asking for the password"
               "nila-first-run.bat", "nila-easy-start.bat",
               # stage 16: the one file to double-click after extracting the ZIP
-              "nila-start.bat"}
+              "nila-start.bat",
+              # stage 17: the memories on D:, reachable from the file he knows
+              "move-memories-to-d.bat"}
 
 
 def test_there_are_bat_files_and_the_expected_ones_are_present():
@@ -119,7 +121,10 @@ def test_the_scripts_call_the_right_python():
     so a machine with python2 first on PATH cannot pick the wrong one."""
     env = (ROOT / "nila-env.bat").read_text()
     assert 'set "NILA_PY=python"' in env
-    assert "where py" in env
+    # ONE token that cmd.exe can quote: "%NILA_PY%" is used in 40+ places and a
+    # quoted two-word command ("py -3") is "The system cannot find the path".
+    assert 'set "NILA_PY=py -3"' not in env
+    assert "sys.executable" in env
     for path in BATS:
         text = path.read_text()
         if path.name in ("nila-env.bat", "nila-common-check.bat"):

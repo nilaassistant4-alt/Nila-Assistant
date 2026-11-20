@@ -1,5 +1,72 @@
 # Changelog
 
+## Unreleased — stage 17: "one file, one key, the memories on D:" (2026-11-04)
+
+Every item below was found by RUNNING the owner's own path (extract → double-click →
+type), not by reading the code. Two of them meant the start could not work at all on
+Windows, and two meant "move it to D:" silently did nothing.
+
+### Fixed
+- **`"py -3"` was put inside quotes.** `nila-env.bat` chose `NILA_PY=py -3` and 42
+  places run `"%NILA_PY%" brain.py ...`; a quoted two-word command is not a program
+  name, so `cmd.exe` answered *"The system cannot find the path specified"* and the
+  window closed. The launcher is now asked for the real `python.exe` path, and the
+  value is always one quotable token.
+- **Every generated shortcut ran a command that does not parse.** `launcher_args`
+  appended `--home X` after the subcommand, and `--home` is a GLOBAL option: the
+  `.vbs`, the `.bat`, the `.desktop` entry and the sign-in shortcut all died with
+  `error: unrecognized arguments: --home`. Global flags now come first, the command
+  is `dashboard` (the documented one; `start` is an alias), and a test feeds the
+  generated arguments back into the real parser.
+- **The icon was never written.** `brain hotkey --write` produced a `.lnk` and told
+  the owner to set a Shortcut key - which Windows only exposes in a dialog. Anyone who
+  did not open Properties had no way to start Nila from the keyboard at all. The
+  Desktop icon is written by the same command, is pointed at the program (not at the
+  vault folder, where `brain.py` is not), and is written once by `nila-start.bat`.
+- **"Move the memory to D:" changed a setting nothing reads.** After a verified copy,
+  `move_storage` wrote `agent.home` into the old `config.json`; `Config.load` never
+  read that key, and the launchers get their folder from `BRAIN_HOME`. Every start
+  after a successful move opened the OLD folder and told the owner his memories were
+  not there. `Config.load` now follows `moved-to.json`, written only after the copy
+  compares identical. An unplugged drive is reported (`moved_to_missing`) and the old
+  folder stays in use - never an empty vault on C:.
+- **The remembered device key was dropped by the move.** The key is sealed with the
+  folder it was saved for, so a byte-identical copy looked like "another vault" and
+  the next start asked for the passphrase. `vaultkey` now follows the same pointer
+  chain, so "opens without typing" survives the move.
+- **`brain storage --set D:/folder` created a database that could not be opened**
+  (`sqlite3.OperationalError: unable to open database file`): the folder was never
+  made. It is created when the owner asks for it, and switching folders now says
+  where the old memories stayed instead of opening an empty store silently.
+- **`start-nila.bat recovery` always sent an empty code.** `set /p CODE=` and
+  `echo %CODE%|` sat inside one `if (...) else (...)` block, and `cmd.exe` expands
+  `%CODE%` when it parses the block - before anything is typed. The branch uses a
+  label now, and `nila-start.bat` pipes the code to `dashboard --recovery-stdin`
+  instead of `start`.
+
+### Added
+- **`move-memories-to-d.bat`** - memories only, copy → compare every file → leave the
+  pointer, dry run first, `YES` required, nothing deleted.
+- `nila-start.bat` offers the recovery-code path, re-checks with `lock-check`, and
+  prints one key (`Ctrl+Alt+N`) plus the Desktop icon.
+- `brain come-from` / `brain lock-check` print `memories stored at ...`, the pointer
+  they followed, and name a drive that is not connected.
+- `tests/test_one_file_one_key_d_drive_acceptance.py` (18 tests), including a
+  detector for the `cmd.exe` parse-time trap that is proved to fail on the shape it
+  catches.
+
+### Fixed in the test runner (both measured, both were lying)
+- `scripts/run_tests.py --shim` reported **59 failed** on a machine where everything
+  passes: each child process found the real pytest and printed no `RESULT` line.
+  `--shim` is now passed on, and `--shim` is no longer read as a module name.
+- `pytest.skip()` in the shim **returned instead of raising**, so an extracted ZIP
+  (no `.git`) reported **9 FAILs** for 9 tests that had correctly skipped, and the
+  lines after the skip ran, including the assert. It raises `_Skipped` now, and a
+  test proves both behaviours (raise when called, mark when used as a decorator).
+- `Param.skip` was declared without `self`, so `@pytest.mark.skip("reason")` stored
+  the Param **object** as the reason. Found while writing the test above; both are
+  pinned now.
+
 ## Unreleased — stage 16: "it says it remembered, and then asks again" (2026-11-04)
 
 Three findings, two of them in the code that was written to fix the previous

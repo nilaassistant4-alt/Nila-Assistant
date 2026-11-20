@@ -18,6 +18,7 @@ Run:  python -m pytest tests/test_v02_scope_finish_acceptance.py -q
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -216,8 +217,26 @@ def test_the_move_copies_and_verifies_before_switching(tmp_path):
     assert (target / "sub" / "note.txt").read_text(encoding="utf-8") == "தமிழ்"
     # the old folder is still there, and a pointer was written
     assert (home / "identity.json").exists()
-    cfg = json.loads((home / "config.json").read_text())
-    assert cfg["agent"]["home"] == str(target)
+    # Stage 17: the pointer used to be `agent.home` in the old config.json, and
+    # NOTHING read that file - the launchers get their folder from BRAIN_HOME, so
+    # every start after a "successful" move still opened the old folder. The
+    # pointer is now moved-to.json, the file Config.load follows.
+    note = home / "moved-to.json"
+    assert str(target) in note.read_text()
+    os.environ["BRAIN_HOME"] = str(home)
+    try:
+        from brain.config import Config
+
+        assert Config.load(home).home == target
+    finally:
+        os.environ.pop("BRAIN_HOME", None)
+    # and a pointer at a folder that is not connected must NOT be followed: the
+    # old folder stays in use and the missing drive is named, so an unplugged D:
+    # can never look like "an empty vault on C:".
+    target.rename(tmp_path / "unplugged")
+    off = Config.load(home)
+    assert off.home == home
+    assert off.moved_to_missing == str(target)
 
 
 def test_a_copy_that_does_not_match_refuses_to_switch(tmp_path, monkeypatch):

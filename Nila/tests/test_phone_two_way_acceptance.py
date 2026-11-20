@@ -399,5 +399,8 @@ def test_the_linux_shortcut_quotes_a_path_with_a_space():
     from brain.util import launcher
 
     text = launcher.linux_desktop("/usr/bin/python3", "/home/a b/brain.py", "/home/a b")
-    assert 'Exec=/usr/bin/python3 "/home/a b/brain.py" start --home "/home/a b"' in text
+    # stage 17: `--home` is a GLOBAL option, so it comes BEFORE the command - the
+    # old order ("start --home X") is the very thing that made every generated
+    # shortcut die with "unrecognized arguments: --home".
+    assert 'Exec=/usr/bin/python3 "/home/a b/brain.py" --home "/home/a b" dashboard' in text
     assert "Terminal=true" in text

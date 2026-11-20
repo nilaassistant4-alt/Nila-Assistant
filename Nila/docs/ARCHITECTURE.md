@@ -136,7 +136,8 @@ by discipline.
 
 | File | Contents | Plaintext? |
 |---|---|---|
-| `config.json` | Layered settings, device id, provider choice | Config only — no personal data |
+| `config.json` | Layered settings, device id, provider choice, `agent.storage_dir` | Config only — no personal data |
+| `moved-to.json` | One pointer, written only after a byte-verified copy when the data folder moves to another drive (`move-to-d.bat`, `move-memories-to-d.bat`). `Config.load` follows it, so a moved vault opens from the same `BRAIN_HOME`; if the drive is not connected the old folder stays in use and `moved_to_missing` names it. Paths only, never data | Paths only |
 | `identity.json` | Device registry, KEK wraps, encrypted identity blob, verifier, **policy**, lockout counters | Policy + counters are clear (must be enforceable while locked); everything else ciphertext |
 | `memory.db` | SQLite: `records`, `records_fts` (blind), `vectors`, `sync_journal`, `sync_state`, `meta` | Ids, kinds, timestamps, blind tokens. **No content, no tags** |
 | `audit.jsonl` | Hash-chained event journal | Event names + metadata keys, never values |

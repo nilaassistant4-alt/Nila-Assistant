@@ -92,23 +92,32 @@ def _looks_running(home: Path) -> str:
     return f"process {pid} still has the vault open"
 
 
-def _repoint_setting(home: Path, target: Path) -> None:
-    """Store the new data folder where the launcher already looks for it."""
-    cfg = home / "config.json"
-    data = {}
-    if cfg.exists():
-        try:
-            data = json.loads(cfg.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            data = {}
-    agent = dict(data.get("agent") or {})
-    agent["home"] = str(target)
-    data["agent"] = agent
-    cfg.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+POINTER = "moved-to.json"
+
+
+def _leave_pointer(home: Path, target: Path) -> Path:
+    """Leave a pointer at the OLD place - the file every launcher actually reads.
+
+    This used to write ``agent.home`` into the old ``config.json``, and nothing
+    ever read it: the launchers get their folder from ``BRAIN_HOME`` (set by
+    ``nila-env.bat`` to ``%LOCALAPPDATA%\\Nila\\vault``), so after a "successful"
+    move every start still opened the old folder and the owner was told his
+    memories were not there. ``brain.config.Config.load`` follows this file.
+    It is written LAST, after the copy verified, so it can never point at a copy
+    that was not proved identical.
+    """
+    note = home / POINTER
+    payload = {"moved_to": str(target), "home": str(target),
+               "moved_at_ms": int(__import__("time").time() * 1000),
+               "note": ("Nila's data now lives in the folder above. This file is only "
+                        "a pointer; the vault was copied, never moved, and nothing "
+                        "in this folder was deleted.")}
+    note.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     try:
-        os.chmod(cfg, 0o600)
+        os.chmod(note, 0o600)
     except OSError:
         pass
+    return note
 
 
 def move(home: Path, target: Path, dry_run: bool = False, yes: bool = False) -> int:
@@ -163,11 +172,12 @@ def move(home: Path, target: Path, dry_run: bool = False, yes: bool = False) -> 
         return 6
     print(f"verified    {len(after)} files, {total_bytes} bytes, every SHA-256 identical")
 
-    (home / "vault-old").mkdir(exist_ok=True)          # the old copy is kept, never deleted
-    _repoint_setting(home, target)
-    print(f"switched    BRAIN_HOME now points at {target}")
-    print(f"kept        {home} (renamed folder inside it: vault-old) - delete it yourself once sure")
-    print("next        run:  brain doctor   (it must pass from the new place)")
+    note = _leave_pointer(home, target)
+    print(f"pointer     {note}")
+    print(f"switched    every Nila start now uses {target}")
+    print(f"kept        the old copy is still at {home} - nothing there was deleted or renamed")
+    print("next        start Nila as usual; `brain come-from` says which folder it used")
+    print("            once you are sure, delete the old folder yourself")
     return 0
 
 

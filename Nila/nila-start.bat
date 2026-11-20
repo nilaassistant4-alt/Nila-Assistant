@@ -78,15 +78,33 @@ echo.
 echo   If you have ONE recovery code (printed at setup), type it here.
 echo   It opens the vault once, with no passphrase and no phone.
 echo.
-set /p RC=Recovery code (or just press Enter to stop): 
-if "%RC%"=="" goto :stuck
-echo %RC%| "%NILA_PY%" brain.py start --recovery-stdin
+set /p NILA_CODE=Recovery code (or just press Enter to stop): 
+if "%NILA_CODE%"=="" goto :stuck
+rem The code is PIPED in, never put on the command line: an argument is visible
+rem to Task Manager, ps, and any log that records argv. One code is spent by
+rem this - that is the deal, and each one works exactly once. `dashboard` and
+rem `start` both open the app; dashboard is the one the icons use.
+echo %NILA_CODE%| "%NILA_PY%" brain.py dashboard --recovery-stdin
+if errorlevel 1 (
+  echo.
+  echo That code did not open the vault, so nothing was changed. Try another one.
+  goto :stuck
+)
+echo.
+echo That code is now spent - the others still work. Choose a passphrase you will
+echo remember (write it on paper; it is the only thing that opens a NEW laptop):
+"%NILA_PY%" brain.py passphrase set
 if errorlevel 1 goto :stuck
 echo.
-echo Opened with a recovery code. Now choose a passphrase you will remember:
-"%NILA_PY%" brain.py passphrase set
+echo Remembering this laptop, so nothing is asked here again:
 "%NILA_PY%" brain.py passphrase remember
-goto :done
+if errorlevel 1 (
+  echo The key could not be saved. Nila still opens with the passphrase you set.
+)
+echo.
+echo Run this same file again from now on: it will not ask for anything.
+pause
+exit /b 0
 
 :stuck
 echo.
@@ -107,16 +125,32 @@ pause
 exit /b 1
 
 :start
+rem ---- 4. one key: the icon, once ------------------------------------------
+rem The owner asked for "the keyboard shortcut, not typing commands". Windows
+rem owns the Shortcut key (no program may set it), so what this writes is the
+rem Nila icon on the Desktop - one double-click - and Windows asks for the
+rem keystroke in its own Properties box. Written once; a failure never stops
+rem the start.
+if not exist "%~dp0nila-start.vbs" (
+  echo Making the Desktop icon (one double-click from now on)...
+  "%NILA_PY%" brain.py hotkey --write >nul 2>&1
+  if exist "%~dp0nila-start.vbs" (
+    echo   done - you can also give that icon Ctrl+Alt+N once, in Properties.
+  ) else (
+    echo   the icon could not be written; starting Nila works anyway.
+  )
+  echo.
+)
 echo Opening Nila. Nothing will be asked on this laptop.
 "%NILA_PY%" brain.py dashboard
-set RC=%ERRORLEVEL%
-if not "%RC%"=="0" (
+set NILA_RC=%ERRORLEVEL%
+if not "%NILA_RC%"=="0" (
   echo.
-  echo Nila stopped with code %RC%. The line just above says why.
+  echo Nila stopped with code %NILA_RC%. The line just above says why.
   echo report.bat writes a short, private summary.
   pause
 )
-exit /b %RC%
+exit /b %NILA_RC%
 
 :done
 echo.

@@ -80,6 +80,21 @@ def where(start_menu: bool = False) -> Path:
     return Path.home() / ".local" / "share" / "applications"
 
 
+def program_dir(home: Path) -> Path:
+    """Where ``brain.py`` actually is: this program folder, not the data folder.
+
+    ``home`` is the VAULT (``%LOCALAPPDATA%\\Nila\\vault`` on Windows, or D: after
+    a move) and it does not contain the program. Writing the launcher file into
+    the vault put it in a folder the owner never looks in, and pointing the
+    shortcut at ``<vault>/brain.py`` produced a shortcut to a file that is not
+    there. Both are fixed by using the checkout this module is running from.
+    """
+    here = Path(__file__).resolve().parents[2]
+    if (here / "brain.py").exists():
+        return here
+    return Path(home)
+
+
 def write_hotkey_shortcut(home: Path, out_dir: Optional[Path] = None,
                           start_menu: bool = False) -> Dict[str, Any]:
     """Write the shortcut Windows needs, and say exactly what to press next.
@@ -92,12 +107,13 @@ def write_hotkey_shortcut(home: Path, out_dir: Optional[Path] = None,
     target_dir = Path(out_dir) if out_dir else where(start_menu)
     system = platform.system().lower()
     py = sys.executable or "python"
-    brain_py = Path(home) / "brain.py"
+    prog = program_dir(home)
+    brain_py = prog / "brain.py"
     script = str(brain_py.resolve()) if brain_py.exists() else "-m brain"
 
     written: List[str] = []
     if system.startswith("win"):
-        vbs = Path(home) / "nila-start.vbs"
+        vbs = prog / "nila-start.vbs"
         from .launcher import windows_vbs
 
         vbs.write_text(windows_vbs(py, script, str(Path(home).resolve())), encoding="utf-8")
@@ -105,7 +121,7 @@ def write_hotkey_shortcut(home: Path, out_dir: Optional[Path] = None,
         target_dir.mkdir(parents=True, exist_ok=True)
         lnk = target_dir / "Nila.lnk"
         _windows_shortcut(lnk, Path("wscript.exe"),
-                          arguments=f'"{vbs}"', workdir=Path(home))
+                          arguments=f'"{vbs}"', workdir=prog)
         written.append(str(lnk))
         how = (f"1. Right-click the shortcut 'Nila' ({lnk})\n"
                f"2. Properties -> the 'Shortcut key' box\n"
