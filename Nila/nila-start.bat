@@ -82,50 +82,116 @@ set /p NILA_CODE=Recovery code (or just press Enter to stop):
 if "%NILA_CODE%"=="" goto :stuck
 rem The code is PIPED in, never put on the command line: an argument is visible
 rem to Task Manager, ps, and any log that records argv. One code is spent by
-rem this - that is the deal, and each one works exactly once. `dashboard` and
-rem `start` both open the app; dashboard is the one the icons use.
+rem this - that is the deal, and each one works exactly once.
+rem
+rem AFTER it opens, the app KEEPS RUNNING: `brain dashboard` is a server. Asking
+rem for a new passphrase from this window while it runs would be a second unlock
+rem of a vault that is already open (and the session file would be overwritten
+rem under it). So the window says what to do next and leaves the app alone.
 echo %NILA_CODE%| "%NILA_PY%" brain.py dashboard --recovery-stdin
-if errorlevel 1 (
+set NILA_RC=%ERRORLEVEL%
+if not "%NILA_RC%"=="0" (
   echo.
-  echo That code did not open the vault, so nothing was changed. Try another one.
-  goto :stuck
+  echo Nothing was changed. Run this file again and type another code.
+  pause
+  exit /b %NILA_RC%
 )
 echo.
-echo That code is now spent - the others still work. Choose a passphrase you will
-echo remember (write it on paper; it is the only thing that opens a NEW laptop):
-"%NILA_PY%" brain.py passphrase set
-if errorlevel 1 goto :stuck
-echo.
-echo Remembering this laptop, so nothing is asked here again:
-"%NILA_PY%" brain.py passphrase remember
-if errorlevel 1 (
-  echo The key could not be saved. Nila still opens with the passphrase you set.
-)
-echo.
-echo Run this same file again from now on: it will not ask for anything.
+echo (Nila was running until you closed it - the window above is now yours again.)
+echo Choose a passphrase you will remember with:
+echo     "%NILA_PY%" brain.py passphrase set
 pause
 exit /b 0
 
 :stuck
 echo.
 echo ==============================================
-echo   Nila could not be opened - and nothing was changed
+echo   Nila could not be opened
 echo ==============================================
-echo Your vault is untouched. Nothing was deleted or overwritten.
+echo Your vault is safe: nothing has been deleted or overwritten.
 echo.
-echo Send me the text of this window (copy all of it). It says which of these
-echo it is, and I will answer exactly:
-echo   1. a passphrase was never set or has been forgotten  -^> a recovery code,
-echo      or `brain passphrase set` once anything opens the vault
-echo   2. the authenticator app has a stale "Nila" entry      -^> the 6-digit code
-echo   3. this is a NEW vault and your memories are in the OLD folder
+echo You have three ways in, and only these three. Read them once:
 echo.
+echo   1. THE PASSPHRASE - the long word YOU chose at setup.
+echo      It is typed where the window says "passphrase". Nothing appears on
+echo      the screen while you type - that is normal - so press Enter after it.
+echo      On paper: wherever you wrote it at setup. Nowhere else. It is not in
+echo      any file on this PC, and I cannot look it up for you.
+echo.
+echo   2. A RECOVERY CODE - a word like  abcde-fghij  in groups of 5 letters,
+echo      8 of them, shown ONCE at setup. That is the only place they exist.
+echo      To use one: close this window, open this file again, and when it asks
+echo      "Recovery code (or just press Enter to stop)" type one code.
+echo      It opens the vault once, with no passphrase and no phone.
+echo.
+echo   3. START A NEW VAULT - if you have neither 1 nor 2, this is the way out.
+echo      Your OLD vault is COPIED to a folder beside it and kept, and a NEW
+echo      vault is made with a NEW passphrase that YOU type now. Nothing is
+echo      deleted. This is the honest fix, and it is also the safe one.
+echo.
+echo ==============================================
+echo   Type a RECOVERY CODE and press Enter to try one now,
+echo   or type  NEW  to start a new vault, or press Enter to stop.
+echo ==============================================
+set NILA_CHOICE=
+set /p NILA_CHOICE=Recovery code, NEW, or Enter: 
+rem LABELS, not if(...) blocks: cmd.exe expands %NILA_CHOICE% when it PARSES a
+rem block, i.e. before anything is typed. That exact shape once sent an empty
+rem recovery code forever (stage 17), so this file does not use it any more.
+if "%NILA_CHOICE%"=="" goto :nila_stopped
+if /i "%NILA_CHOICE%"=="NEW" goto :nila_new_vault
+echo Trying that code...
+echo %NILA_CHOICE%| "%NILA_PY%" brain.py lock-check --recovery-stdin >nul 2>&1
+if errorlevel 1 goto :nila_bad_code
+echo The code opened the vault. Now choose a passphrase you will remember:
+"%NILA_PY%" brain.py passphrase set
+"%NILA_PY%" brain.py passphrase remember
+echo.
+echo From now on this laptop opens by itself. Write the passphrase on paper.
+pause
+exit /b 0
+
+:nila_bad_code
+echo.
+echo That code did not open the vault. Nothing was changed. Run this file again
+echo and type another code, or type NEW.
+pause
+exit /b 1
+
+:nila_stopped
+echo.
+echo Stopped. Nothing was changed. Your vault is exactly as it was.
 echo report.bat writes the same thing to a file, with no secrets in it.
 pause
 exit /b 1
 
+:nila_new_vault
+echo.
+echo Starting a NEW vault. The old one is copied first and kept.
+rem The new vault is created, this laptop remembers it, and then the app is
+rem STARTED HERE, once: opening it twice (this line plus :start) left two servers
+rem racing for the same port, and the owner saw "Address already in use".
+"%NILA_PY%" brain.py new-vault
+if errorlevel 1 (
+  echo.
+  echo The new vault was not created. The old one is untouched. Send me the
+  echo text above.
+  pause
+  exit /b 1
+)
+echo.
+echo Opening Nila with the new vault...
+"%NILA_PY%" brain.py dashboard
+set NILA_RC=%ERRORLEVEL%
+if not "%NILA_RC%"=="0" (
+  echo.
+  echo Nila stopped with code %NILA_RC%. The line above says why.
+  pause
+)
+exit /b %NILA_RC%
+
 :start
-rem ---- 4. one key: the icon, once ------------------------------------------
+rem ---- 4. the icon, and only when it is missing ---------------------------
 rem The owner asked for "the keyboard shortcut, not typing commands". Windows
 rem owns the Shortcut key (no program may set it), so what this writes is the
 rem Nila icon on the Desktop - one double-click - and Windows asks for the

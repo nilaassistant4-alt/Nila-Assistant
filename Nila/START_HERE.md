@@ -50,6 +50,28 @@ connected"** and changes nothing — it never quietly starts an empty vault on C
 `brain storage --set D:/folder` is the one-command form of the same idea, and it now
 says where the old memories stayed instead of opening an empty store.
 
+### Forgot the passphrase AND you have no recovery code? (start a new vault)
+
+This is the case the owner reported: *"I do not know the password, I do not know what
+a recovery code is, and Nila will not start."* One double-click now answers it.
+
+1. Double-click **`nila-start.bat`** as usual.
+2. If it cannot open the vault it shows a screen with **three ways in**, and only three:
+   1. **THE PASSPHRASE** — the word you chose. Nothing appears while you type (normal);
+      it is on paper, nowhere in any file on this PC, and nobody can look it up.
+   2. **A RECOVERY CODE** — 8 words like `abcde-fghij`, shown **once** at setup. That
+      is the only place they exist. Type one at the prompt; each works once.
+   3. **START A NEW VAULT** — if you have neither.
+3. Type **`NEW`** and press Enter. Nila then:
+   - copies your whole old vault to `vault-old-<date>` **beside** it (kept, verified),
+   - asks you for a **new passphrase** (write it on paper — at least 6 characters),
+   - prints **new recovery codes** and a **new authenticator secret** (once),
+   - remembers this laptop, and opens Nila.
+4. Nothing is deleted, and the old folder still opens with the old passphrase if you
+   ever remember it.
+
+From the command window the same thing is: `python brain.py new-vault`.
+
 ### Forgot the passphrase? You are not locked out (and a paper code is enough)
 - **You have one recovery code** (from setup): `start-nila.bat recovery` → type the
   code. That opens the vault **without the passphrase and without the phone**. Each

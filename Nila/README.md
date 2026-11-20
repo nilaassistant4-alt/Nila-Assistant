@@ -29,7 +29,7 @@ Requires **Python 3.10+**. No third-party packages are mandatory.
 unzip NILA_V02_STAGE15.zip      # the file you downloaded
 cd Nila
 
-# 1. create the vault (passphrase must be at least 8 characters)
+# 1. create the vault (passphrase: at least 6 characters)
 python3 brain.py init --label mylaptop
 
 # 2. put something in it
@@ -50,6 +50,8 @@ On Windows, one extra step makes it *once, ever* on that laptop:
 ```bat
 nila-start.bat              :: the one to double-click: diagnose, set up if needed,
                             :: remember this laptop, open Nila
+brain new-vault             :: no passphrase and no recovery code? a NEW vault, a
+                            :: NEW passphrase you choose - the old one is copied and kept
 brain come-from             :: "I just extracted it, it asks for a password" - what
                             :: is on this laptop, and the one instruction that fits
 nila-first-run.bat          :: setup (if needed) + remember this laptop + check

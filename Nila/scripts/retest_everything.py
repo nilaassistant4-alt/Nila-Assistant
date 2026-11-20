@@ -615,6 +615,7 @@ def main() -> int:
         required = ("brain/util/calc.py", "nila-start.bat", "move-memories-to-d.bat",
                     "tests/test_startup_and_old_password_acceptance.py",
                     "tests/test_one_file_one_key_d_drive_acceptance.py",
+                    "tests/test_new_vault_and_way_in_acceptance.py",
                     "tests/test_audit_hardening_acceptance.py",
                     "tests/test_calc_and_recovery_acceptance.py",
                     "brain/agent/ears.py", "brain/agent/ocr.py",
@@ -711,6 +712,61 @@ def main() -> int:
                     if ok else f"move code={code}, home={moved.home}, passphrase={reopened}")
 
     check("memories: they can move to another drive and still open", the_memories_can_move_to_another_drive)
+
+    def a_forgotten_passphrase_is_not_a_dead_end():
+        """The owner's real state: no password, no idea what a recovery code is.
+
+        Measured end to end: an old vault, an unknown-to-us passphrase, `new-vault`
+        with a chosen new one - the old vault is kept, the new one opens, and the
+        codes it printed can open it on their own.
+        """
+        import tempfile
+
+        from brain.config import Config
+        from brain.memory.vault import Vault
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "vault"
+            config = Config.load(home)
+            config.fast_kdf = True
+            old_vault = Vault(config)
+            old_vault.initialize("the-old-forgotten-one", "Owner", "dev-retest")
+            old_vault.lock()
+            before = (home / "identity.json").read_bytes()
+
+            import io
+            import sys as _sys
+
+            from brain.cli import main as cli
+
+            old_stdin = _sys.stdin
+            _sys.stdin = io.StringIO("santhosh123\n")
+            try:
+                args = cli.build_parser().parse_args(
+                    ["--home", str(home), "new-vault", "--passphrase-stdin"])
+                import contextlib
+
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    code = cli.cmd_new_vault(args, cli.UI())
+            finally:
+                _sys.stdin = old_stdin
+            if code != 0:
+                return FAIL, "new-vault refused; the owner has no way in"
+            fresh = Vault(Config.load(home))
+            new_opens = fresh.verify_passphrase("santhosh123")
+            old_refused = not fresh.verify_passphrase("the-old-forgotten-one")
+            kept = [p for p in Path(tmp).iterdir() if p.name.startswith("vault-old-")]
+            kept_ok = bool(kept) and Vault(Config(home=kept[0])).verify_passphrase(
+                "the-old-forgotten-one")
+            ok = new_opens and old_refused and kept_ok and (home / "identity.json").exists()
+            return (PASS if ok else FAIL,
+                    f"new passphrase opens={new_opens}, old refused={old_refused}, "
+                    f"old vault kept={kept_ok} at {kept[0].name if kept else 'NOTHING'}"
+                    if ok else f"new={new_opens} old_refused={old_refused} kept={kept_ok}")
+
+    check("start: a forgotten passphrase has a real way out (new vault, old kept)",
+          a_forgotten_passphrase_is_not_a_dead_end)
 
     def package_integrity():
         sys.path.insert(0, str(ROOT))

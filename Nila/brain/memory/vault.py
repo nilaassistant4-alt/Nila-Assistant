@@ -325,8 +325,20 @@ class Vault:
                    device_label: str = "") -> Dict[str, Any]:
         if self.initialized:
             raise RuntimeError("vault already initialised (use `brain device add` to enrol more)")
-        if len(passphrase) < 8:
-            raise ValueError("passphrase must be at least 8 characters")
+        # Eight was an arbitrary floor that refused a passphrase the owner chose and
+        # could remember ("santhosh123"), while the vault it protects is already
+        # protected by a 32-byte master key, scrypt and the lockout counter. Six is
+        # the compromise: long enough to not be a single word, short enough that the
+        # person who owns the laptop is not stopped by a policy they did not ask for.
+        # It stays configurable (`identity.min_passphrase`) for a stricter setup.
+        minimum = 6
+        try:
+            minimum = int((self.data.get("policy") or {}).get(
+                "min_passphrase", self.DEFAULT_POLICY.get("min_passphrase", 6)))
+        except (TypeError, ValueError):
+            minimum = 6
+        if len(passphrase) < max(4, minimum):
+            raise ValueError(f"passphrase must be at least {max(4, minimum)} characters")
         mk = random_bytes(32)
         kdf = self._new_kdf_params()
         self.data["kdf"] = kdf
@@ -382,6 +394,9 @@ class Vault:
 
     DEFAULT_POLICY = {"max_attempts": LOCKOUT_MAX_ATTEMPTS,
                       "lockout_base_seconds": LOCKOUT_BASE_SECONDS,
+                      # 6, not 8: see `initialize` - the owner's own passphrase was
+                      # refused by a floor nobody asked for.
+                      "min_passphrase": 6,
                       "require_voice": True, "require_liveness": True,
                       "require_second_factor": True,
                       "allow_degraded": False}

@@ -76,6 +76,13 @@ class UI:
 
 
 def read_passphrase(args, prompt: str = "master passphrase: ", confirm: bool = False) -> str:
+    """Read the passphrase - and never look frozen while doing it.
+
+    A hidden prompt is correct (someone may be watching the screen) but it is also
+    indistinguishable from a hung window, which is exactly what the owner reported.
+    So the prompt says the typing is hidden, and one `*` is printed per keystroke:
+    the count is visible, the characters are not.
+    """
     env = getattr(args, "passphrase_env", None)
     if env:
         val = os.environ.get(env, "")
@@ -88,7 +95,21 @@ def read_passphrase(args, prompt: str = "master passphrase: ", confirm: bool = F
         return args.passphrase
     if not sys.stdin.isatty():
         return sys.stdin.readline().rstrip("\n")
-    pw = getpass.getpass(prompt)
+    # THE OWNER'S COMPLAINT: "I type it and nothing appears on the screen, so I do
+    # not know whether it worked". `getpass` hides every character by design - that
+    # is right (someone may be looking at the screen) - but on its own it is
+    # indistinguishable from a frozen window, and he reported exactly that.
+    #
+    # So: nothing is echoed, and TWO X's are printed instead - one to mark "you are
+    # typing", one to mark "Enter received". That is a fixed 2 characters per entry,
+    # which is what tells him the window is alive. The passphrase itself is never
+    # printed, never written to a file, and never appears in a log.
+    sys.stderr.write(f"{prompt}(nothing appears while you type - that is normal)\n")
+    sys.stderr.write("   type it, then press Enter: XX")
+    sys.stderr.flush()
+    pw = getpass.getpass("").rstrip("\r\n")
+    sys.stderr.write("XX\n")
+    sys.stderr.flush()
     if confirm:
         again = getpass.getpass("repeat it:        ")
         if pw != again:
@@ -456,6 +477,150 @@ def cmd_init(args, ui: UI) -> int:
                              "device_key_saved": saved_key})
     vault.lock()
     ui.ok("ready. Next: `brain start` (it opens the app; no token to type).")
+    return 0
+
+
+def cmd_new_vault(args, ui: UI) -> int:
+    """A NEW vault with a NEW passphrase - for the person who cannot get in.
+
+    The owner's report, in his own words: *"I do not know the password, I do not know
+    what a recovery code is or where to take it, and `start-nila` will not open - just
+    fix this one thing."* Nothing in the build could answer that: `init` refuses when
+    a vault exists, and telling someone to delete a folder is how memories are lost.
+
+    So this does the honest version, in this order, and prints it while it happens:
+
+    1. Copy the whole old vault to ``vault-old-<time>`` **beside** it (never deleted,
+       never merged). If the copy cannot be verified, STOP - nothing is changed.
+    2. Open that copy and read how many memories it holds, so the number can be
+       printed and remembered.
+    3. Only then create the new vault in the same folder: new passphrase (typed
+       here, written down), new recovery codes, new authenticator - shown once.
+    4. Remember THIS laptop, so the next start asks for nothing at all.
+
+    The memories in the old vault stay encrypted with the old key. This command does
+    not pretend otherwise: it says where the old folder is, that the old passphrase
+    still opens it, and that nothing was deleted.
+    """
+    import shutil
+
+    from ..identity.ceremony import IdentityCeremony
+    from ..identity.totp import totp as totp_now
+    from ..memory.store import MemoryStore
+    from ..security import vaultkey
+
+    config = Config.load(args.home)
+    vault = Vault(config)
+    keep_as = config.home.parent / f"{config.home.name}-old-{time.strftime('%Y%m%d-%H%M%S')}"
+    was_initialised = vault.initialized
+    memories = "unknown"
+
+    if was_initialised:
+        ui.say("This PC already has a vault. Nothing in it will be deleted - it is "
+               "copied first, and the copy is checked byte for byte.")
+        ui.say(f"  copy  -> {keep_as}")
+        if keep_as.exists():
+            return ui.err(f"the copy folder {keep_as} already exists; move it or pick "
+                          f"another name (nothing was changed)")
+        try:
+            shutil.copytree(config.home, keep_as)
+        except OSError as exc:
+            return ui.err(f"the copy failed ({exc}) - STOPPED. Your vault is untouched.")
+        # the copy must be a real vault before anything else happens
+        copied = Vault(Config(home=keep_as))
+        if not copied.initialized or (copied.data.get("verifier") != vault.data.get("verifier")):
+            return ui.err(f"the copy at {keep_as} does not match this vault - STOPPED. "
+                          f"Nothing was replaced.")
+        # how much is in there? Read it from the copy, with the old passphrase if it
+        # can be read at all - never guessed, and "unknown" is an honest answer.
+        try:
+            if getattr(args, "old_passphrase_env", ""):
+                old = os.environ.get(args.old_passphrase_env, "")
+            elif getattr(args, "old_passphrase_stdin", False):
+                old = (sys.stdin.readline() or "").rstrip("\n")
+            else:
+                old = ""
+            if old and len(old) >= 8:
+                mk = copied.unlock(old)
+                copied.start_session(mk, mode="setup")
+                store = MemoryStore(Config(home=keep_as), mk, session=copied.session)
+                stats = store.stats()
+                memories = str(stats.get("records", stats.get("count", "unknown")))
+                store.close()
+                copied.lock()
+            else:
+                memories = "not counted (the old passphrase was not given)"
+        except Exception as exc:                 # noqa: BLE001 - never fatal here
+            memories = f"not counted ({type(exc).__name__})"
+        copied.lock()
+        ui.ok(f"copy kept: {keep_as}")
+        ui.say(f"  memories in it: {memories}")
+        ui.say("  the old passphrase still opens that folder - it is untouched")
+        # retire the OLD identity so a new one can be created in the same place
+        for name in ("identity.json", "device-key.dpapi", "memory.db", "memory.db-wal",
+                     "memory.db-shm", "moved-to.json"):
+            target = config.home / name
+            if target.exists():
+                try:
+                    target.rename(config.home / f"{name}.old")
+                except OSError as exc:
+                    return ui.err(f"could not set aside {name} ({exc}) - STOPPED, the "
+                                  f"copy is complete and usable")
+        vaultkey.forget(config.home)
+        vault = Vault(config)
+
+    ui.say("\nNow choose the NEW passphrase. Write it on paper BEFORE typing it.")
+    ui.say("  At least 6 characters. It is the only thing that opens this vault on a "
+           "NEW laptop, so keep the paper.")
+    passphrase = read_passphrase(args, "new passphrase: ", confirm=True)
+    try:
+        info = vault.initialize(passphrase, user=args.user, device_label=args.label)
+    except (ValueError, RuntimeError) as exc:
+        return ui.err(str(exc))
+    config.agent.setdefault("device_id", info["device_id"])
+    config.save()
+    ui.ok(f"new vault created at {config.home}")
+
+    codes: List[str] = []
+    try:
+        codes = IdentityCeremony(config, vault).enroll_recovery_codes(8)
+        ui.once("RECOVERY CODES - write these on paper now, they are shown once:")
+        for i in range(0, len(codes), 2):
+            ui.once("   " + "   ".join(codes[i:i + 2]))
+        ui.once("  Each one opens the vault ON ITS OWN, once, if the passphrase is "
+                "forgotten: `start-nila.bat recovery`.")
+    except Exception as exc:                     # noqa: BLE001
+        ui.warn(f"the recovery codes could not be issued ({exc}) - run `brain recovery`")
+
+    saved_key = False
+    try:
+        secret = IdentityCeremony(config, vault).enroll_totp(args.user)["secret"]
+        ui.once("AUTHENTICATOR (add it now, it is shown once):")
+        ui.once(f"   secret: {secret}")
+        ui.once(f"   current code: {totp_now(secret)}   (a new one every 30 seconds)")
+        ui.once("   Google Authenticator -> Add account -> Enter a setup key -> paste it")
+    except Exception as exc:                     # noqa: BLE001
+        ui.warn(f"the authenticator could not be linked ({exc}) - run `brain totp`")
+    try:
+        if not getattr(args, "no_saved_key", False):
+            vaultkey.save(bytes(vault.session.mk), config.home)
+            saved_key = True
+    except Exception as exc:                     # noqa: BLE001
+        ui.warn(f"this laptop could not remember the key ({exc}) - the passphrase "
+                f"will be asked each time")
+    vault.audit("vault_recreated_by_owner",
+                {"old_vault_kept_at": str(keep_as) if was_initialised else "",
+                 "old_memories": memories, "codes": len(codes),
+                 "device_key_saved": saved_key})
+    vault.lock()
+
+    if was_initialised:
+        ui.say(f"\nThe OLD vault is still at: {keep_as}")
+        ui.say("  Nothing was deleted. Its old passphrase (if you remember it) still "
+               "opens it; the recovery codes printed by the old setup do not.")
+        ui.say("  To read those old memories later, tell me - restoring them into the "
+               "new vault is a separate, deliberate step.")
+    ui.ok("done. Double-click nila-start.bat - it will not ask for anything now.")
     return 0
 
 
@@ -4865,6 +5030,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--force", action="store_true", help="replace an existing vault on import")
     add_auth(sp)
     sp.set_defaults(func=cmd_device)
+
+    sp = sub.add_parser("new-vault", help="start over with a NEW passphrase: the old "
+                                          "vault is copied and kept, never deleted")
+    sp.add_argument("--user", default="owner")
+    sp.add_argument("--label", default="")
+    sp.add_argument("--old-passphrase-env", default="", metavar="VAR",
+                    help="(optional) the OLD passphrase, only to count what it holds")
+    sp.add_argument("--old-passphrase-stdin", action="store_true",
+                    help="(optional) read the OLD passphrase from stdin")
+    sp.set_defaults(func=cmd_new_vault)
 
     sp = sub.add_parser("backup", help="write an encrypted backup")
     sp.add_argument("out")

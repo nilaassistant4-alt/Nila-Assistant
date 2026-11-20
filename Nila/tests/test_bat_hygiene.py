@@ -38,6 +38,8 @@ DOCUMENTED = {"start-nila.bat", "setup.bat", "report.bat", "nila-phone.bat",
               "nila-start.bat",
               # stage 17: the memories on D:, reachable from the file he knows
               "move-memories-to-d.bat"}
+#: The words a person with no way in must be able to read on the stuck screen.
+STUCK_WORDS = ("THE PASSPHRASE", "A RECOVERY CODE", "START A NEW VAULT")
 
 
 def test_there_are_bat_files_and_the_expected_ones_are_present():

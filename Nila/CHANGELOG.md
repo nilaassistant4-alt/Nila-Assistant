@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased — stage 18: "I do not know the password, so give me a new vault" (2026-11-04)
+
+The owner's report was one sentence and there was no answer to it: *"the password is
+unknown, a recovery code is asked for, and I do not know what that is or where to take
+it - Nila will not start."* Everything below is that dead end removed.
+
+### Added
+- **`brain new-vault`** (and the `NEW` choice on the stuck screen of
+  `nila-start.bat`): copies the whole old vault to `vault-old-<date>` beside it,
+  verifies the copy, sets the old identity aside (never deletes), then creates a NEW
+  vault with a NEW passphrase you type now, NEW recovery codes, a NEW authenticator
+  secret, and remembers this laptop. If the copy fails, nothing is replaced.
+- The stuck screen now names **the three ways in and no others** - the passphrase, a
+  recovery code (`abcde-fghij`, shown once at setup), or a new vault - and accepts a
+  recovery code typed there, so that path does not need a second command.
+
+### Fixed
+- **The passphrase prompt looked frozen.** `getpass` echoes nothing by design, so "I
+  type it and nothing appears" was a correct prompt that looked broken. It now says
+  so, and prints two `XX` markers (before/after Enter) as visible progress. The
+  passphrase itself is still never echoed, written, or logged.
+- **An 8-character floor refused the owner's own passphrase.** `Vault.initialize`
+  now requires **6** (policy key `min_passphrase`), because the vault is protected by
+  a 32-byte master key, scrypt and the lockout counter - not by a length policy
+  nobody asked for.
+- **The recovery path opened the app and then asked it to unlock again.** After
+  `dashboard --recovery-stdin` the vault is already open in a running server; asking
+  for a new passphrase from that window was a second unlock. It now prints the one
+  command to run after closing Nila.
+- **A new vault could have pointed at the OLD encrypted `memory.db`** (unreadable with
+  the new key). The store and the old identity files are set aside as `*.old`, and a
+  test proves an empty store opens with zero records.
+- `tests/test_new_vault_and_way_in_acceptance.py` (10 tests); `retest_everything.py`
+  gains a check that runs the whole forgotten-passphrase path.
+
 ## Unreleased — stage 17: "one file, one key, the memories on D:" (2026-11-04)
 
 Every item below was found by RUNNING the owner's own path (extract → double-click →
