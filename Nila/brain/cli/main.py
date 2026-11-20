@@ -234,6 +234,7 @@ def open_vault(args, require_unlocked: bool = True, mode: str = "passphrase",
                     # twice and the second factor is not asked for again.
                     _finish_open(config, vault, session.mk, args, mode="device-key",
                                  require_second_factor=False)
+                    vault.note_home()
                     return config, vault
         if getattr(args, "recovery_stdin", False) and not getattr(args, "recovery", None):
             # BUG-3: `start-nila.bat recovery` passed the code as an argument, so it
@@ -257,6 +258,7 @@ def open_vault(args, require_unlocked: bool = True, mode: str = "passphrase",
                 raise SystemExit(str(exc) + (f" (locked out {w}s)" if w else "")) from exc
             _finish_open(config, vault, session.mk, args, mode="recovery",
                          require_second_factor=False)
+            vault.note_home()
             _remember_after_passphrase(config, vault, session.mk, args)
             _RECOVERY_WARNING.append(
                 "opened with a recovery code: that code is now spent, and the "
@@ -278,6 +280,7 @@ def open_vault(args, require_unlocked: bool = True, mode: str = "passphrase",
         _finish_open(config, vault, mk, args, mode=mode,
                      require_second_factor=True, allow_setup=allow_setup)
         _remember_after_passphrase(config, vault, mk, args)
+        vault.note_home()
     return config, vault
 
 
@@ -717,6 +720,25 @@ def cmd_change_passphrase(args, ui: UI) -> int:
 
     config, vault = open_vault(args)
     try:
+        # The old passphrase is only needed when the old passphrase is what opened
+        # the vault. If a saved device key or a recovery code opened it, the owner
+        # does not HAVE the old passphrase - that is the whole reason he is here - and
+        # asking for it is how "I changed my password" turned into "the old password
+        # still works": the prompt could not be answered, nothing was changed, and the
+        # command looked like it had done something.
+        opened_with = getattr(getattr(vault, "session", None), "mode", "passphrase")
+        if opened_with in ("device-key", "recovery", "setup"):
+            new = (sys.stdin.readline().rstrip("\n") if args.new_passphrase_stdin
+                   else read_passphrase(args, "new passphrase (write it down): ", confirm=True))
+            vault.set_passphrase(new, mode="cli")
+            ui.ok("new passphrase set - you did not need the old one, because this "
+                  "laptop opened the vault by itself.")
+            ui.say("  the OLD passphrase (if you still remember it) stops working now, "
+                   "on every machine.")
+            ui.say("  write the new one on paper: it is what opens Nila on a NEW laptop.")
+            vault.audit("passphrase_changed_by_owner", {"opened_with": opened_with,
+                                                        "old_passphrase_required": False})
+            return 0
         old = read_passphrase(args)
         if args.new_passphrase_stdin:
             new = sys.stdin.readline().rstrip("\n")
@@ -3852,6 +3874,119 @@ def cmd_hotkey(args, ui: UI) -> int:
     return 0
 
 
+def cmd_come_from(args, ui: UI) -> int:
+    """"I unzipped it and it is asking for a password" - answer THAT, from the machine.
+
+    The owner's first problem was not a bug he could describe; it was a black window
+    asking for a word he did not know, right after extracting a ZIP. A person in that
+    position needs one screen that says what is on this laptop and what to type, and
+    the machine already knows all of it. So this reads the vault WITHOUT opening it:
+
+    * is there a vault here (and where),
+    * does the identity.json look like one of ours (a broken/half-written one is named),
+    * is this laptop remembered (so nothing will be asked),
+    * how many recovery codes exist, and can any of them OPEN the vault,
+    * does the journal say his passphrase was ever changed here,
+    * was Nila moved since the vault was last used (the old "wrong password" trap).
+
+    It never guesses. Every line is a fact read off disk, and the last section is one
+    instruction that matches the situation it found.
+    """
+    import datetime as _dt
+
+    from ..security import vaultkey
+
+    config = Config.load(args.home)
+    vault = Vault(config)
+    saved = vaultkey.status(config.home)
+    out: Dict[str, Any] = {"ok": True, "vault": str(config.home),
+                           "vault_exists": vault.initialized,
+                           "remembered": saved["remembered"],
+                           "remember_method": saved["method"]}
+
+    codes_total = codes_usable = 0
+    if vault.initialized:
+        rec = vault.data.get("recovery_wraps") or {}
+        hashes = rec.get("hashes") or []
+        used = set(rec.get("used") or [])
+        wraps = rec.get("wraps") or {}
+        codes_total = len([h for h in hashes if h not in used])
+        codes_usable = len([h for h in hashes if h not in used and h in wraps])
+        out["recovery_codes_left"] = codes_total
+        out["recovery_codes_that_can_open_it"] = codes_usable
+        out["kdf"] = (vault.data.get("kdf") or {}).get("alg", "")
+
+    # Was the passphrase ever changed from THIS machine? The journal is not encrypted,
+    # so this question can be answered while the vault is locked.
+    changed = False
+    last_event = ""
+    last_ts = 0
+    for row in vault.read_audit(500):
+        last_event, last_ts = row.get("event", ""), int(row.get("ts") or 0)
+        if last_event in ("passphrase_set", "passphrase_changed_by_owner",
+                          "passphrase_rotated"):
+            changed = True
+    out["passphrase_ever_changed_here"] = changed
+    out["last_journal_event"] = last_event
+    out["last_used"] = (_dt.datetime.fromtimestamp(last_ts / 1000)
+                        .strftime("%Y-%m-%d %H:%M") if last_ts else "")
+
+    # Was this folder just moved? The vault remembers the path it was used from, and a
+    # moved ZIP is the classic way to get "the password is right but it says wrong".
+    remembered_path = str(vault.data.get("last_home") or "")
+    moved = bool(remembered_path) and remembered_path != str(config.home)
+    out["moved_from"] = remembered_path if moved else ""
+
+    if not vault.initialized:
+        next_step = ("There is no vault on this laptop yet: double-click "
+                     "nila-first-run.bat. It asks you to CHOOSE a passphrase once, "
+                     "shows recovery codes, and remembers this laptop.")
+    elif saved["remembered"]:
+        next_step = ("This laptop can open Nila on its own - nothing will be asked. "
+                     "Double-click start-nila.bat.")
+    elif codes_usable:
+        next_step = ("Type a recovery code instead of the passphrase: "
+                     "start-nila.bat recovery. One code opens the vault once, with no "
+                     "passphrase and no phone. Then run: brain passphrase set")
+    elif codes_total:
+        next_step = ("Your recovery codes are from an older build and cannot open the "
+                     "vault by themselves. Use the passphrase once, then run "
+                     "`brain recovery --count 8` to get codes that CAN.")
+    else:
+        next_step = ("No recovery code is left. The passphrase is the only way in "
+                     "from this laptop - if it is forgotten, `brain passphrase set` "
+                     "cannot help without one successful unlock. A backup made with "
+                     "backup-to-d.bat can be restored onto a clean install.")
+    out["what_to_do"] = next_step
+
+    if args.json:
+        ui.emit(out)
+        return 0
+    print("What is on this laptop")
+    print("─" * 64)
+    print(f"vault              : {out['vault'] if vault.initialized else 'none yet'}")
+    if vault.initialized and out.get("kdf"):
+        print(f"vault format       : {out['kdf']} (a vault from an older build opens "
+              f"here too - the passphrase is read the same way)")
+    print(f"opens without typing: {'YES' if saved['remembered'] else 'no'}"
+          + (f"   ({saved['method']})" if saved["remembered"] else ""))
+    if vault.initialized:
+        print(f"recovery codes      : {codes_total} left, {codes_usable} can open the vault")
+    print(f"passphrase changed  : {'yes, from this machine' if changed else 'never, on this machine'}")
+    if out["last_used"]:
+        print(f"last used           : {out['last_used']}  ({last_event})")
+    if moved:
+        print(f"moved               : this folder was used at {remembered_path} before")
+    print("─" * 64)
+    print("do this now:")
+    print("  " + next_step)
+    print()
+    print("why it kept asking: an older Nila asked for the passphrase at every start and")
+    print("remembered nothing. This build remembers the master key on this laptop once,")
+    print("which is why the answer above matters. `brain lock-check` repeats it any time.")
+    return 0
+
+
 def cmd_lock_check(args, ui: UI) -> int:
     """One screen that answers: will Nila ask me for a password next time?
 
@@ -4521,6 +4656,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-startup", action="store_true", help="remove the sign-in start")
     sp.add_argument("--voice", action="store_true", help="what the voice half needs")
     sp.set_defaults(func=cmd_hotkey)
+
+    sp = sub.add_parser("come-from", help="just extracted? what is on this laptop and "
+                                          "what should I type?")
+    sp.set_defaults(func=cmd_come_from)
 
     sp = sub.add_parser("lock-check", help="will Nila ask me for a password next time?")
     sp.set_defaults(func=cmd_lock_check)

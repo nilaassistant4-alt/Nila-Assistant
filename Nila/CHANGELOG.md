@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased — stage 16: "it says it remembered, and then asks again" (2026-11-04)
+
+Three findings, two of them in the code that was written to fix the previous
+complaint — which is worth stating plainly, because "the fix did not fix it" is the
+kind of thing a changelog should not bury.
+
+### Fixed
+- **`vaultkey.save` reported success without reading the key back.** A secret store
+  that accepts a write and returns nothing (a locked Credential Locker, a headless
+  Secret Service) made `brain passphrase status` say *remembered: YES* while every
+  start still asked for the passphrase. `save` now writes, reads the value again, and
+  only then reports success — for both keyring and the DPAPI file. A store that
+  swallows it raises `VaultKeyError` with the reason instead of a cheerful lie.
+- **A saved key for a vault that had moved blocked remembering forever.** `load`
+  returned None for a key belonging to another folder, and `save` refused to overwrite
+  a stored value: a permanent "it will not remember me". `load` now deletes a value it
+  can prove is useless, so the next `save` succeeds.
+- **"I changed my password and the old one still works."** `change-passphrase` asked
+  for the OLD passphrase first, so an owner who does not know it could not change
+  anything — the command then looked like it had worked. When the vault was opened by
+  the saved device key or a recovery code, the old passphrase is not asked for at all;
+  a test proves the old one stops working and the memories still open.
+
+### Added
+- **`brain come-from`** — the one screen for the one sentence: *"I extracted it and it
+  asks for a password."* It reads the machine without opening the vault: is there one
+  (and where), is this laptop remembered, how many recovery codes exist **and how many
+  of them can actually open it**, whether the passphrase was ever changed here, whether
+  the folder was moved since it was last used. Then it prints one instruction that fits
+  the situation it found.
+- **`nila-start.bat`** — the single file to double-click after extracting. It names the
+  folder the memories live in, diagnoses before doing anything, runs setup only when
+  there is no vault, remembers the laptop, offers the recovery-code route when nothing
+  else works, and refuses to delete or re-create a vault. `test_bat_hygiene` covers it
+  like every other `.bat`.
+- `Vault.note_home()` records the folder a vault is used from, which is what lets the
+  diagnosis say "this folder was used at X before" — the classic right-password-wrong-
+  folder trap after re-extracting a ZIP.
+
+### Pinned
+- A vault built exactly the way `Nila-v0.1.0.zip` built it (kdf n=4096, same envelope)
+  opens with today's code and its passphrase. A fresh extract is not a new vault, and
+  if that ever stops being true a re-extract silently costs the owner his memories.
+
+Suite 1556 passed / 0 failed / 3 skipped; the runner for machines without pytest:
+1750 passed / 0 failed; retest 56 pass / 5 skip / 0 fail; probe 29 pass / 0 gap.
+
 ## Unreleased — stage 15: the audit's findings, and the recovery code that never worked (2026-11-04)
 
 An external audit produced six defects, a second list of five "critical/high" items,

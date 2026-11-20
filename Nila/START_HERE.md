@@ -9,6 +9,10 @@ Tamil out, your phone both ways, a better dashboard, and `.bat` files you can tr
 
 1. Extract this ZIP to `C:\Nila` (right-click → **Extract All**). You do this **once**;
    after that, nothing needs extracting again.
+   **Then double-click `nila-start.bat` — that one file is the whole start.** It shows
+   which vault folder it found (your memories live in `%LOCALAPPDATA%\Nila\vault`,
+   *not* in the folder you extracted), says whether this laptop will ask for a password,
+   and stops with a readable message instead of a black window that closes.
 2. On your phone install **Google Authenticator** or **Microsoft Authenticator**.
 3. **Double-click `nila-first-run.bat`** (not `setup.bat`). It runs setup, then makes
    this laptop remember the key, then prints the plain answer to *will it ask me
@@ -46,6 +50,7 @@ with a newer version never touches your data.
 
 | File | What it does | When |
 |---|---|---|
+| `nila-start.bat` | **the one to double-click**: finds the vault, sets it up only if there is none, remembers this laptop, opens Nila | every day |
 | `nila-first-run.bat` | setup + remember this laptop + check, in one double-click | once |
 | `nila-easy-start.bat` | shortcut, voice, check, then Nila | every day (the easy one) |
 | `setup.bat` | one-time setup on its own, safe to run twice | once |

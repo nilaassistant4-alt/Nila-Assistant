@@ -191,7 +191,16 @@ def save(master_key: bytes, home: Path, user: str = "") -> Dict[str, Any]:
     if kr is not None:
         try:
             kr.set_password(SERVICE, user or USER_PLACEHOLDER, payload)
-            return {**which, "saved": True, "where": f"keyring:{SERVICE}"}
+            # WRITE, THEN READ IT BACK. "saved" was returned without anyone asking the
+            # store for the value again, so a store that accepts a write and hands back
+            # nothing (a locked Credential Locker, a headless Secret Service) reported
+            # success while every start asked for the passphrase - which is exactly the
+            # complaint this module exists to answer.
+            if _parse(_read_keyring(kr, user) or "", Path(home)) == master_key:
+                return {**which, "saved": True, "verified": True,
+                        "where": f"keyring:{SERVICE}"}
+            last = ("keyring accepted the key but did not return it when read back "
+                    "(a locked or headless secret store)")
         except Exception as exc:              # noqa: BLE001 - fall through to DPAPI
             last = f"keyring refused: {type(exc).__name__}: {exc}"
     else:
@@ -203,25 +212,44 @@ def save(master_key: bytes, home: Path, user: str = "") -> Dict[str, Any]:
             os.chmod(path, 0o600)
         except OSError:                       # pragma: no cover - Windows
             pass
+        verified = False
+        try:
+            verified = _parse(_dpapi_unprotect(path.read_bytes()).decode(),
+                              Path(home)) == master_key
+        except Exception:                     # pragma: no cover - Windows
+            verified = False
+        if not verified:
+            raise VaultKeyError(
+                "the key was written but could not be read back, so Nila would still "
+                "ask every time. Nothing was gained or lost - the vault is untouched")
         return {"ok": True, "method": "dpapi", "detail": "Windows DPAPI (per-user)",
-                "saved": True, "where": str(path), "note": backend(home)["note"],
-                "keyring_problem": last}
+                "saved": True, "verified": True, "where": str(path),
+                "note": backend(home)["note"], "keyring_problem": last}
     raise VaultKeyError(f"could not remember the key on this system ({last}); "
                         f"try {KEYRING_HINT}")
+
+
+def _read_keyring(kr, user: str = "") -> Optional[str]:
+    try:
+        return kr.get_password(SERVICE, user or USER_PLACEHOLDER)
+    except Exception:                         # pragma: no cover - backend trouble
+        return None
 
 
 def load(home: Path, user: str = "") -> Optional[bytes]:
     """The remembered master key, or None. Never raises: a miss is not an error."""
     kr = _keyring()
     if kr is not None:
-        try:
-            blob = kr.get_password(SERVICE, user or USER_PLACEHOLDER)
-            if blob:
-                found = _parse(blob, Path(home))
-                if found:
-                    return found
-        except Exception:                     # pragma: no cover - backend trouble
-            pass
+        blob = _read_keyring(kr, user)
+        if blob:
+            found = _parse(blob, Path(home))
+            if found:
+                return found
+            # The store holds a key for a DIFFERENT vault (the vault was moved, or a
+            # new one was made in another folder). Keeping it means a stale value that
+            # can never work and that `save` refuses to overwrite - a permanent
+            # "it will not remember me". Drop it here, where it is provably useless.
+            forget(Path(home), user)
     path = store_path(home)
     if path.exists() and _dpapi_available():
         try:

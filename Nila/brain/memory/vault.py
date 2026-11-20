@@ -179,6 +179,20 @@ class Vault:
             }
             self.save()
 
+    def note_home(self) -> None:
+        """Record the folder this vault is being used from - so a MOVE can be explained.
+
+        The owner extracts a new ZIP, runs setup again, and the vault that matters is
+        still in the old folder; or he moves the vault to D: and the shortcut still
+        points at the old path. Either way the symptom is "the password is right but
+        it says wrong", and `brain come-from` can only name that if the path was
+        written down. Written on demand (not on every save) so it costs nothing.
+        """
+        here = str(Path(self.config.home).resolve())
+        if (self.data.get("last_home") or "") != here:
+            self.data["last_home"] = here
+            self.save()
+
     def save(self) -> None:
         self.data["schema_version"] = SCHEMA_VERSION
         self.data["updated_at"] = now_ms()

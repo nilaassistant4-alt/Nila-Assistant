@@ -48,6 +48,10 @@ Every command that needs the vault asks for your passphrase **once per session**
 On Windows, one extra step makes it *once, ever* on that laptop:
 
 ```bat
+nila-start.bat              :: the one to double-click: diagnose, set up if needed,
+                            :: remember this laptop, open Nila
+brain come-from             :: "I just extracted it, it asks for a password" - what
+                            :: is on this laptop, and the one instruction that fits
 nila-first-run.bat          :: setup (if needed) + remember this laptop + check
 brain passphrase status     :: will it ask me again?  (a plain yes/no)
 brain lock-check            :: the same, with the four reasons on one screen
