@@ -86,7 +86,43 @@ From the command window the same thing is: `python brain.py new-vault`.
   means. The paper passphrase, one recovery code, or a `backup-to-d.bat` copy is the
   whole list of ways back in.
 
-## 2. Every day — the six files you double-click
+### Start over with a fresh vault, in one double-click — `reset-vault.bat`
+
+This is the plan you wrote out yourself, made safe. It is the same thing as typing
+**`NEW`** on the stuck screen, but it also works when Nila *does* still open and you
+simply want to begin again.
+
+1. Close every Nila window.
+2. Double-click **`reset-vault.bat`**.
+3. It prints the exact vault folder it is about to replace (usually
+   `%LOCALAPPDATA%\Nila\vault`) and asks you to type **`START`**. Anything else
+   cancels and changes nothing.
+4. It copies the old vault to `vault-old-<date>` **beside** it and compares the copy
+   before it does anything else. **It never renames and never deletes** — a rename
+   would leave you with one single copy, and that is the one thing that could lose
+   your memories.
+5. It asks for a **new passphrase** (at least 6 characters), prints new recovery codes
+   and a new authenticator secret **once**, and remembers this laptop.
+
+Then write the passphrase on paper and put the paper somewhere that is not this laptop.
+
+### One click, no passphrase — what is real today
+
+You asked for Nila to open with the Windows PIN and to ask for the passphrase only
+once a week. Here is the honest state of that, in three lines:
+
+| What you asked for | Real today? | What actually happens |
+|---|---|---|
+| no passphrase prompt on this laptop | **yes, already** | the key is kept in Windows' own protected store; you type the passphrase **once per laptop**, not once a week |
+| the passphrase typed again every 7 days | **no** | there is no weekly timer; if you want the prompt back sooner, `python brain.py passphrase forget` |
+| a **Windows PIN / Hello** prompt from Nila | **no — not built** | that needs a small compiled Windows helper and a real Windows test run. Nila does **not** pretend: `python brain.py winmode` prints *"Windows Hello prompt: not in this build"* and then the two things that do work |
+
+So the way in today is: **the Nila icon on the Desktop**, or **`Ctrl+Alt+N`**, or
+`nila-start.bat`. All three open Nila without a passphrase on this laptop. The Windows
+PIN is still worth setting — it is what stops someone who picks up the laptop from
+using *any* of those three, and `python brain.py winmode` tells you so in one line.
+
+## 2. Every day — the `.bat` files you double-click
 
 | File | What it does | When |
 |---|---|---|
@@ -98,6 +134,7 @@ From the command window the same thing is: `python brain.py new-vault`.
 | `start-nila.bat` | starts Nila, opens the dashboard | every day |
 | `nila-phone.bat` | Nila **answers Telegram messages** from your phone | while you want the phone to work |
 | `nila-cmd.bat` | a command window with Nila's settings loaded | for `python brain.py …` |
+| `reset-vault.bat` | starts a brand new vault (the old one is copied, never deleted); type `START` to confirm | once, only when you want to begin again |
 | `report.bat` | writes a report (no secrets inside) | when something is wrong |
 | `backup-to-d.bat` | dated backup **and** a real restore check | weekly |
 | `sync-host.bat` | shares this PC's memory with your **other PC** on the same Wi-Fi | on the PC that has the memory |

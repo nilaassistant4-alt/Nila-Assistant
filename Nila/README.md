@@ -1,6 +1,6 @@
 # Nila — a local-first personal AI brain
 
-> **Windows user? Start with [`START_HERE.md`](START_HERE.md)** (v0.2: the six `.bat` files,
+> **Windows user? Start with [`START_HERE.md`](START_HERE.md)** (v0.2: the `.bat` files,
 > voice in/out, the phone window, Ollama and Gemini). See [`ROADMAP.md`](ROADMAP.md) and [`PROGRESS.md`](PROGRESS.md).
 > Note: since v0.1 the vault requires an authenticator code (`brain totp` once after `brain init`);
 > the passphrase alone is refused.
@@ -378,6 +378,17 @@ of them behave the same way when you ask for it.
 - "Remembered" means anyone at your unlocked desktop can open Nila. That is what a
   key in the OS store is; the journal records `unlock_via_device_key` so the
   difference between "he typed it" and "the laptop had it" is never lost.
+- **`brain winmode`** answers "how does Nila open on this PC, and does it ask me
+  anything?" in one screen: the vault path, whether the key is remembered, in which
+  store, and the honest line *"Windows Hello prompt: not in this build"*. A PIN
+  prompt raised by Nila needs a compiled Windows helper plus a Windows test run; a
+  weekly re-prompt is not built either (the 7-day timer fights "do not ask me"). The
+  path that works today is the Windows PIN at sign-in, the remembered device key, and
+  the Desktop icon / `Ctrl+Alt+N` / the Startup shortcut.
+- **`reset-vault.bat`** is the one double-click for starting over: it prints the vault
+  folder, asks for `START`, **copies** the old vault aside and verifies it, then runs
+  `brain new-vault`. It never renames and never deletes — a rename would leave a
+  single copy of your memories.
 
 ---
 

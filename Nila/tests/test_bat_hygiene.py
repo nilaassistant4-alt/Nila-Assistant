@@ -37,7 +37,9 @@ DOCUMENTED = {"start-nila.bat", "setup.bat", "report.bat", "nila-phone.bat",
               # stage 16: the one file to double-click after extracting the ZIP
               "nila-start.bat",
               # stage 17: the memories on D:, reachable from the file he knows
-              "move-memories-to-d.bat"}
+              "move-memories-to-d.bat",
+              # stage 19: the safe form of "rename the folder and start over"
+              "reset-vault.bat"}
 #: The words a person with no way in must be able to read on the stuck screen.
 STUCK_WORDS = ("THE PASSPHRASE", "A RECOVERY CODE", "START A NEW VAULT")
 

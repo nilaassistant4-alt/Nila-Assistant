@@ -624,6 +624,79 @@ def cmd_new_vault(args, ui: UI) -> int:
     return 0
 
 
+def cmd_winmode(args, ui: UI) -> int:
+    """The honest status of "log in to Windows, Nila opens by itself".
+
+    The owner proposed it (DPAPI + Windows Hello, one keystroke, no passphrase to
+    remember) and it is a good idea; what this command does is say, on THIS machine,
+    exactly what is and is not in place - including the two things that make the
+    difference between a convenience and a hole:
+
+    * **Is there a Windows lock screen at all?** The owner said his laptop boots
+      straight to the desktop. If that is still true, then the device key can be
+      read by anyone who touches the laptop, and "no password" means "no lock".
+    * **A window that makes Windows Hello unlock Nila** needs a compiled program
+      (ctypes + DllImport) and a real Windows machine to test on. It is NOT in this
+      build, and this command says so instead of pretending.
+
+    So: report the facts, keep the working path (PIN on the laptop + the remembered
+    device key, which is already built), and name the missing piece precisely.
+    """
+    from ..security import vaultkey
+
+    config = Config.load(args.home)
+    vault = Vault(config)
+    saved = vaultkey.status(config.home)
+    which = vaultkey.backend(config.home)
+    payload = {
+        "ok": True,
+        "platform": sys.platform,
+        "vault": str(config.home),
+        "vault_exists": vault.initialized,
+        "remembered": saved["remembered"],
+        "store": which.get("method"),
+        "store_detail": which.get("detail"),
+        "windows_hello_unlock": False,
+        "windows_hello_why": (
+            "a Windows Hello prompt that unlocks Nila needs a small compiled helper "
+            "(ctypes + the WinRT UserConsentVerifier API) and a Windows PC to test on; "
+            "it is not in this build. What IS built: the device key in Windows' own "
+            "store, so the passphrase is typed once per laptop and never again, and "
+            "`brain passphrase forget` to take that back."),
+        "looks_like_a_lock": (
+            "the laptop must have a Windows PIN/password of its own. Without one, "
+            "anyone who opens the lid is already 'the owner' and could start Nila "
+            "with no prompt - that is the Windows account's problem, not Nila's."),
+        "what_to_do_today": (
+            "1. Windows: Settings > Accounts > Sign-in options > add a PIN\n"
+            "2. Nila: brain passphrase remember  (nila-start.bat does this for you)\n"
+            "3. Press the Desktop icon or Ctrl+Alt+N - nothing is asked"),
+        "ask_to_build": (
+            "if you still want the Windows Hello version, say so and it becomes a "
+            "separate, deliberate piece of work with a Windows test run - not a "
+            "silent change to how the vault opens."),
+    }
+    if args.json:
+        ui.emit(payload)
+        return 0
+    print("One click, no passphrase - what is real on this PC")
+    print("-" * 62)
+    print(f"vault                : {config.home if payload['vault_exists'] else 'none yet'}")
+    print(f"opened by itself     : {'YES - the key is in ' + str(which.get('method')) if saved['remembered'] else 'no'}")
+    print(f"it is stored in      : {which.get('detail')}")
+    print("Windows Hello prompt : not in this build")
+    print("-" * 62)
+    print(payload["windows_hello_why"])
+    print()
+    print(payload["looks_like_a_lock"])
+    print()
+    print("today, in order:")
+    for line in payload["what_to_do_today"].split("\n"):
+        if line.strip():
+            print("  " + line.strip())
+    return 0
+
+
 def cmd_status(args, ui: UI) -> int:
     config = Config.load(args.home)
     vault = Vault(config)
@@ -5040,6 +5113,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--old-passphrase-stdin", action="store_true",
                     help="(optional) read the OLD passphrase from stdin")
     sp.set_defaults(func=cmd_new_vault)
+
+    sp = sub.add_parser("winmode", help="one click and no passphrase: what is real, "
+                                        "what is not, and why")
+    sp.set_defaults(func=cmd_winmode)
 
     sp = sub.add_parser("backup", help="write an encrypted backup")
     sp.add_argument("out")

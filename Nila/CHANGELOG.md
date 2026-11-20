@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased — stage 19: the safe reset, and the truth about "log in to Windows" (2026-11-04)
+
+The owner's own plan, adopted where it is safe and answered honestly where it is not.
+
+### Added
+- **`reset-vault.bat`** — the owner's step ("rename the vault folder to `vault_old`,
+  run setup again") as one double-click, minus the trap: a **rename leaves one copy**,
+  so this COPIES the old vault, compares every file, and only then makes the new one.
+  Nothing is renamed and nothing is deleted. Asks for `START` before touching anything.
+- **`brain winmode`** — the state of "one click, no passphrase" on this PC: is the key
+  remembered, where, and **what is not built** (a Windows Hello prompt needs a compiled
+  helper and a Windows test run). It keeps the working path in front: Windows PIN + the
+  remembered device key + the Desktop icon / `Ctrl+Alt+N` / sign-in start.
+- `nila-start.bat` now also writes the sign-in start (once, quietly) next to the
+  Desktop icon, so "extract once, then only double-click" is literally true.
+
+### Not built (said plainly, in the command itself)
+- A PIN/Windows Hello prompt raised *by Nila* before unlocking. Not faked, not implied.
+- A weekly re-prompt. The 7-day timer is easy but it fights the same request ("do not
+  ask me"), so it is a decision, not an oversight.
+
+### Fixed
+- `nila-start.bat` had bare LF lines after the stage-18 edit; the hygiene test caught
+  it, and it is CRLF-only again (cmd.exe mis-parses `if (...)` around bare LF).
+
 ## Unreleased — stage 18: "I do not know the password, so give me a new vault" (2026-11-04)
 
 The owner's report was one sentence and there was no answer to it: *"the password is

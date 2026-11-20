@@ -207,6 +207,14 @@ if not exist "%~dp0nila-start.vbs" (
   )
   echo.
 )
+rem ---- 5. the Desktop icon and the sign-in start: once ------------------
+rem The owner's plan: "extract once, then only ever double-click the shortcut".
+rem Both are files he can see and delete: the icon on the Desktop, and a .vbs in
+rem his OWN Startup folder (not a service, no registry). Written once, and a
+rem failure never stops the start.
+if not exist "%~dp0nila-start.vbs" (
+  "%NILA_PY%" brain.py launcher --add-startup >nul 2>&1
+)
 echo Opening Nila. Nothing will be asked on this laptop.
 "%NILA_PY%" brain.py dashboard
 set NILA_RC=%ERRORLEVEL%

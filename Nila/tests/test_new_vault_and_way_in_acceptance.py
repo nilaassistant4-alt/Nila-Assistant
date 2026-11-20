@@ -282,3 +282,44 @@ def test_the_new_vault_path_starts_the_app_exactly_once():
     assert new.count("brain.py dashboard") == 1, \
         "two servers, one port: 'Address already in use'"
     assert "goto :start" not in new, "the :start block would open a second server"
+
+
+# --------------------------------------------------------------------------- #
+# 5. stage 19: the one-click reset, and the honest Windows-mode report
+# --------------------------------------------------------------------------- #
+def test_reset_vault_bat_exists_and_never_renames_or_deletes():
+    """The advice was "rename the vault folder to vault_old". A rename leaves ONE
+    copy; a failed setup after it has no second chance. This file copies first."""
+    raw = (ROOT / "reset-vault.bat").read_bytes()
+    assert raw.startswith(b"@echo off") and b"\n" not in raw.replace(b"\r\n", b"")
+    assert all(b < 127 for b in raw)
+    text = raw.decode("ascii")
+    assert "brain.py new-vault" in text          # copy -> verify -> new vault
+    assert "copy" in text.lower() and "delete" in text.lower()
+    assert "move " not in text.lower() and "ren " not in text.lower()
+    assert "Type START" in text                  # nothing happens by accident
+    assert "pause" in text
+
+
+def test_the_launcher_writes_the_icon_and_the_sign_in_start_once():
+    text = (ROOT / "nila-start.bat").read_text()
+    # the icon (stage 17) and the sign-in start (stage 19), both once, both silent
+    assert "brain.py hotkey --write" in text
+    assert "brain.py launcher --add-startup" in text
+    assert text.count("brain.py dashboard") >= 1
+
+
+def test_winmode_reports_the_truth_about_windows_hello(tmp_path):
+    """It is a good idea and it is NOT in this build. Saying so is the feature."""
+    from brain.cli import main as cli
+
+    home = tmp_path / "vault"
+    args = cli.build_parser().parse_args(["--home", str(home), "winmode"])
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert cli.cmd_winmode(args, cli.UI()) == 0
+    text = buf.getvalue()
+    assert "not in this build" in text
+    assert "PIN" in text                       # what to do instead, today
+    json_args = cli.build_parser().parse_args(["--home", str(home), "winmode", "--json"])
+    assert cli.cmd_winmode(json_args, cli.UI()) == 0

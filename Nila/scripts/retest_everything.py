@@ -612,7 +612,7 @@ def main() -> int:
         # proves each one so the check cannot pass on a stale ZIP. Stage 14 adds
         # the four files that make "the passphrase is asked once" true, because
         # that claim is worthless if the ZIP an owner downloads is missing them.
-        required = ("brain/util/calc.py", "nila-start.bat", "move-memories-to-d.bat",
+        required = ("brain/util/calc.py", "nila-start.bat", "move-memories-to-d.bat", "reset-vault.bat",
                     "tests/test_startup_and_old_password_acceptance.py",
                     "tests/test_one_file_one_key_d_drive_acceptance.py",
                     "tests/test_new_vault_and_way_in_acceptance.py",
