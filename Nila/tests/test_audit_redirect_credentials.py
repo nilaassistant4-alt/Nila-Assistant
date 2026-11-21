@@ -272,3 +272,47 @@ def test_a_redirect_to_a_private_address_is_refused_before_any_second_request():
                                  {"Location": "http://127.0.0.1:8790/v1/blobs"},
                                  "http://127.0.0.1:8790/v1/blobs")
     assert "127.0.0.1" in str(exc.value)
+
+
+# --------------------------------------------------------------------------- #
+# Disguised IPv4: the forms the C resolver accepts and ``ipaddress`` rejects.
+#
+# Idea taken from OpenJarvis (Apache-2.0), security/ssrf.py::_disguised_ipv4 --
+# https://github.com/open-jarvis/OpenJarvis -- and re-written here for Nila's
+# redirect guard. Found by reading their code: our own check said "public" for
+# ``http://127.1/``, which the operating system resolves to 127.0.0.1.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("url", [
+    "http://0x7f.0.0.1/x",          # dotted hex
+    "http://0x7f000001/x",          # packed hex
+    "http://0177.0.0.1/x",          # dotted octal
+    "http://127.1/x",               # short-dotted loopback
+    "http://127.0.1/x",
+    "http://0/x",                   # "0" is 0.0.0.0
+    "http://2130706433/x",          # decimal
+])
+def test_a_disguised_loopback_is_refused_like_the_real_one(url):
+    from brain.util.http import is_public_url
+
+    assert is_public_url(url) is False, url
+
+
+def test_a_disguised_private_host_is_refused_as_a_redirect_destination():
+    """The same hole through the other door: a public feed 302s to ``127.1``."""
+    import urllib.request
+
+    from brain.util.http import RedirectRefused, _PublicRedirects
+
+    handler = _PublicRedirects()
+    req = urllib.request.Request("https://example.com/start")
+    with pytest.raises(RedirectRefused):
+        handler.redirect_request(req, None, 302, "Found",
+                                 {"Location": "http://127.1:8790/v1/chat"},
+                                 "http://127.1:8790/v1/chat")
+
+
+def test_a_public_dotted_quad_is_still_allowed_after_normalisation():
+    """The fix must not start refusing ordinary public IPv4 hosts."""
+    from brain.util.http import is_public_url
+
+    assert is_public_url("http://93.184.216.34/index.html") is True

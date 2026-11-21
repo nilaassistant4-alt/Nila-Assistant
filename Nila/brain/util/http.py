@@ -23,6 +23,8 @@ when a redirect is harmless.
 """
 from __future__ import annotations
 
+import ipaddress
+import socket
 import urllib.error
 import urllib.request
 from typing import Any, Optional
@@ -51,6 +53,30 @@ class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
         raise RedirectRefused(req.full_url, code, newurl)
 
 
+def _disguised_ipv4(host: str) -> Optional[ipaddress.IPv4Address]:
+    """The canonical IPv4 for a non-standard textual form, or None.
+
+    ``urlparse`` hands back the host as it was typed, and ``ipaddress`` refuses
+    forms the C resolver happily accepts: ``2130706433`` (decimal), ``0x7f.0.0.1``
+    (hex), ``0177.0.0.1`` (octal) and ``127.1`` (short-dotted) are all
+    ``127.0.0.1`` to the operating system. Before this existed, a public feed that
+    answered a fetch with ``302 http://127.1/`` reached Nila's own localhost API
+    with no token -- the redirect handler asked ``is_public_url`` first, and
+    ``is_public_url`` said yes because "127.1" is not a valid dotted quad.
+
+    ``socket.inet_aton`` follows the same resolver rules (decimal/hex/octal/short
+    dotted), so it is the honest oracle here. Plain dotted-quad returns None: it
+    is already classified by ``ipaddress`` above, and double-reporting it would
+    just make the caller check the same block twice.
+    """
+    try:
+        packed = socket.inet_aton(host)
+    except OSError:
+        return None
+    addr = ipaddress.IPv4Address(packed)
+    return None if str(addr) == host else addr
+
+
 def is_public_url(url: str) -> bool:
     """True when ``url`` is https (or plain http, for local tools) and NOT private.
 
@@ -59,6 +85,9 @@ def is_public_url(url: str) -> bool:
     feed the owner typed) followed redirects anywhere, so any of those hosts could
     bounce Nila to ``http://127.0.0.1:8790`` and make her talk to a local service
     with no token. A public fetch now stays public.
+
+    "Private" includes the disguised forms of 127.0.0.1 (hex, octal, decimal,
+    short-dotted): see :func:`_disguised_ipv4`.
     """
     parsed = urlparse(str(url or ""))
     if parsed.scheme not in ("http", "https"):
@@ -69,13 +98,15 @@ def is_public_url(url: str) -> bool:
     if host in ("localhost", "localhost.localdomain") or host.endswith(".localhost"):
         return False
     # A hostname with no dot cannot be a public site (it is a LAN/NetBIOS name).
+    # A colon means an IPv6 literal, which the ipaddress branch below classifies.
     if "." not in host and ":" not in host:
         return False
     try:
-        import ipaddress
-
         addr = ipaddress.ip_address(host)
     except ValueError:
+        disguised = _disguised_ipv4(host)
+        if disguised is not None:
+            return False
         return True                       # an ordinary DNS name
     return not (addr.is_private or addr.is_loopback or addr.is_link_local
                 or addr.is_reserved or addr.is_multicast or addr.is_unspecified)

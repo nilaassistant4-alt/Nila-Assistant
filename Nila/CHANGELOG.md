@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased — security: a disguised loopback is a loopback (2026-11-04)
+
+Found while reading OpenJarvis (Apache-2.0). Their `security/ssrf.py` normalises
+hex / octal / decimal / short-dotted IPv4 before classifying a URL; ours did not.
+Reproduced by running it, not by reading: `is_public_url("http://127.1/x")` said
+**True** on the previous build, and so did `http://0x7f.0.0.1/x` and
+`http://0177.0.0.1/x`. The operating system resolves every one of them to
+`127.0.0.1`, so a public feed that answered a credential-free fetch with
+`302 http://127.1:8790/v1/chat` would have reached Nila's own localhost API with
+no token - the exact hole `_PublicRedirects` was written to close.
+
+### Fixed
+- `brain/util/http.py::is_public_url` now runs `_disguised_ipv4()` (an
+  `inet_aton` normalisation, the same rules the C resolver uses) before saying
+  "an ordinary DNS name", and refuses the private address it finds. Ordinary
+  public dotted-quads still pass (`http://93.184.216.34/` -> allowed).
+- Six regression tests in `tests/test_audit_redirect_credentials.py`, including
+  the redirect door and a positive control so the fix cannot start refusing
+  public IPv4 hosts.
+
+### Attribution
+- Idea from **OpenJarvis** (Apache-2.0), `src/openjarvis/security/ssrf.py`
+  (`_disguised_ipv4`) - <https://github.com/open-jarvis/OpenJarvis>. Re-written
+  for Nila; no code copied.
+
 ## Unreleased — stage 19: the safe reset, and the truth about "log in to Windows" (2026-11-04)
 
 The owner's own plan, adopted where it is safe and answered honestly where it is not.
